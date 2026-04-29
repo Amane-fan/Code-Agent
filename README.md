@@ -30,6 +30,16 @@ export OPENAI_API_KEY="..."
 uv run python -m code_agent ask "为空名称添加校验" --provider openai
 ```
 
+项目会自动读取仓库根目录下的 `.env`。当前 `.env.example` 已按阿里百炼 OpenAI 兼容接口配置：
+
+```bash
+DASHSCOPE_API_KEY=替换为你的阿里百炼API_KEY
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1
+DASHSCOPE_MODEL=qwen3.6-plus
+```
+
+`openai` provider 同时兼容 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 变量。
+
 如果希望在补丁校验通过后自动应用，并运行测试：
 
 ```bash

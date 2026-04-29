@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from code_agent.env import get_env, load_env_file
+
 
 DEFAULT_MODEL = "gpt-4.1-mini"
+
+
+def default_model() -> str:
+    """读取模型配置，优先使用 .env 或系统环境中的模型名。"""
+
+    return get_env("OPENAI_MODEL", "DASHSCOPE_MODEL", default=DEFAULT_MODEL)
 
 
 @dataclass(frozen=True)
@@ -17,11 +24,17 @@ class AgentConfig:
 
     repo_path: Path = field(default_factory=Path.cwd)
     provider: str = "offline"
-    model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", DEFAULT_MODEL))
+    model: str = field(default_factory=default_model)
     max_files: int = 12
     max_file_bytes: int = 24_000
     max_context_chars: int = 80_000
     session_dir_name: str = ".code-agent"
+
+    def __post_init__(self) -> None:
+        # 先加载仓库根目录的 .env，再补一次默认模型解析，确保 CLI 和库调用都能使用本地配置。
+        load_env_file(self.repo_root / ".env")
+        if self.model == DEFAULT_MODEL:
+            object.__setattr__(self, "model", default_model())
 
     @property
     def repo_root(self) -> Path:

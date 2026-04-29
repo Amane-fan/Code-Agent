@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
 
+from code_agent.env import get_env, load_env_file
 from code_agent.models import RepoContext
 
 
@@ -18,6 +18,8 @@ SYSTEM_INSTRUCTIONS = (
     "Do not include secrets. Prefer adding tests when behavior changes.\n"
     "End with a short verification plan."
 )
+
+DEFAULT_RESPONSES_API_URL = "https://api.openai.com/v1/responses"
 
 
 class ModelProvider(Protocol):
@@ -54,15 +56,17 @@ class OfflineProvider:
 
 @dataclass(frozen=True)
 class OpenAIResponsesProvider:
-    """通过 OpenAI Responses API 生成计划和补丁。"""
+    """通过 OpenAI 兼容的 Responses API 生成计划和补丁。"""
 
     name: str = "openai"
-    api_url: str = "https://api.openai.com/v1/responses"
+    api_url: str | None = None
 
     def complete(self, prompt: str, context: RepoContext, *, model: str) -> str:
-        api_key = os.getenv("OPENAI_API_KEY")
+        # Provider 调用前再加载一次仓库 .env，覆盖直接使用 Provider 的场景。
+        load_env_file(context.root / ".env")
+        api_key = get_env("OPENAI_API_KEY", "DASHSCOPE_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is required when provider=openai")
+            raise RuntimeError("OPENAI_API_KEY or DASHSCOPE_API_KEY is required when provider=openai")
 
         # Responses API 使用 instructions 承载系统约束，input 承载用户任务和仓库上下文。
         payload = {
@@ -84,7 +88,7 @@ class OpenAIResponsesProvider:
             ],
         }
         request = urllib.request.Request(
-            self.api_url,
+            self.api_url or _responses_api_url(),
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -113,6 +117,19 @@ def make_provider(name: str) -> ModelProvider:
     if normalized == "openai":
         return OpenAIResponsesProvider()
     raise ValueError(f"unknown provider: {name}")
+
+
+def _responses_api_url() -> str:
+    """根据 .env 中的 base_url 推导 Responses API 地址。"""
+
+    explicit_url = get_env("OPENAI_RESPONSES_URL", "DASHSCOPE_RESPONSES_URL")
+    if explicit_url:
+        return explicit_url
+
+    base_url = get_env("OPENAI_BASE_URL", "DASHSCOPE_BASE_URL")
+    if base_url:
+        return f"{base_url.rstrip('/')}/responses"
+    return DEFAULT_RESPONSES_API_URL
 
 
 def _extract_response_text(payload: dict[str, object]) -> str:
