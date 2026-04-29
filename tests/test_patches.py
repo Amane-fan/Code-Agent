@@ -44,6 +44,41 @@ diff --git a/app.py b/app.py
             self.assertTrue(tool.apply(patch).ok)
             self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "new\n")
 
+    def test_patch_tool_rejects_paths_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            patch = """diff --git a/../outside.txt b/../outside.txt
+--- a/../outside.txt
++++ b/../outside.txt
+@@ -1 +1 @@
+-old
++new
+"""
+
+            result = PatchTool(root).check(patch)
+
+            self.assertFalse(result.ok)
+            self.assertIn("escapes workspace", result.error)
+
+    def test_patch_tool_rejects_sensitive_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            (root / ".env").write_text("TOKEN=old\n", encoding="utf-8")
+            patch = """diff --git a/.env b/.env
+--- a/.env
++++ b/.env
+@@ -1 +1 @@
+-TOKEN=old
++TOKEN=new
+"""
+
+            result = PatchTool(root).check(patch)
+
+            self.assertFalse(result.ok)
+            self.assertIn("sensitive path", result.error)
+
 
 if __name__ == "__main__":
     unittest.main()

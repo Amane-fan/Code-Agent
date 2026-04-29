@@ -16,8 +16,8 @@ class ContextFile:
 
 
 @dataclass(frozen=True)
-class RepoContext:
-    """模型调用前汇总出的仓库上下文。"""
+class WorkspaceContext:
+    """模型调用前汇总出的 workspace 上下文。"""
 
     root: Path
     prompt: str
@@ -27,7 +27,7 @@ class RepoContext:
     def render(self, max_chars: int) -> str:
         # 统一在这里渲染 prompt 上下文，方便后续替换为压缩摘要或结构化消息。
         sections = [
-            f"Repository: {self.root}",
+            f"Workspace: {self.root}",
             "Git status:",
             self.git_status.strip() or "clean or unavailable",
             "Relevant files:",
@@ -39,6 +39,9 @@ class RepoContext:
         if len(rendered) <= max_chars:
             return rendered
         return rendered[:max_chars] + "\n\n[context truncated]"
+
+
+RepoContext = WorkspaceContext
 
 
 @dataclass(frozen=True)

@@ -15,6 +15,17 @@ class ToolTests(unittest.TestCase):
             result = FileTools(root).read(".env")
             self.assertFalse(result.ok)
 
+    def test_file_tools_refuse_paths_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            outside = Path(tmp) / "outside.txt"
+            outside.write_text("secret\n", encoding="utf-8")
+
+            result = FileTools(root).read("../outside.txt")
+
+            self.assertFalse(result.ok)
+
     def test_shell_tool_requires_safe_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = ShellTool(Path(tmp)).run("rm -rf .")

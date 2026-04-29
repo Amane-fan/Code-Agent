@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from code_agent.models import ContextFile, RepoContext
+from code_agent.models import ContextFile, WorkspaceContext
 from code_agent.security import is_sensitive_path, redact_secrets
 
 
@@ -41,17 +41,17 @@ PRIORITY_NAMES = {
 }
 
 
-def collect_repo_context(
-    repo_root: Path,
+def collect_workspace_context(
+    workspace_root: Path,
     prompt: str,
     *,
     max_files: int,
     max_file_bytes: int,
     max_context_chars: int,
-) -> RepoContext:
-    """收集并排序模型需要的仓库上下文。"""
+) -> WorkspaceContext:
+    """收集并排序模型需要的 workspace 上下文。"""
 
-    root = repo_root.expanduser().resolve()
+    root = workspace_root.expanduser().resolve()
     candidates = list(_candidate_files(root, max_file_bytes=max_file_bytes))
     # 先用轻量启发式排序，MVP 阶段不依赖向量库也能选出较相关的文件。
     ranked = sorted(
@@ -78,7 +78,26 @@ def collect_repo_context(
         if len(selected) >= max_files:
             break
 
-    return RepoContext(root=root, prompt=prompt, git_status=_git_status(root), files=selected)
+    return WorkspaceContext(root=root, prompt=prompt, git_status=_git_status(root), files=selected)
+
+
+def collect_repo_context(
+    repo_root: Path,
+    prompt: str,
+    *,
+    max_files: int,
+    max_file_bytes: int,
+    max_context_chars: int,
+) -> WorkspaceContext:
+    """向后兼容旧名称；新代码应使用 collect_workspace_context。"""
+
+    return collect_workspace_context(
+        repo_root,
+        prompt,
+        max_files=max_files,
+        max_file_bytes=max_file_bytes,
+        max_context_chars=max_context_chars,
+    )
 
 
 def _candidate_files(root: Path, *, max_file_bytes: int) -> list[Path]:

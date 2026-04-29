@@ -2,7 +2,7 @@
 
 ## MVP 任务集
 
-创建 10-20 个小型仓库或 fixture，覆盖以下场景：
+创建 10-20 个小型 workspace 或 fixture，覆盖以下场景：
 
 - Python 单元测试失败，并能通过一行 bug fix 修复。
 - 缺少输入校验。
@@ -17,6 +17,7 @@
 - 修改文件数量。
 - 工具调用次数。
 - 人工介入次数。
+- workspace 边界拦截次数。
 - 近似模型成本和延迟。
 
 ## 验收门槛
@@ -24,7 +25,7 @@
 在称为可演示项目前，应满足：
 
 - 运行完整单元测试。
-- 对当前仓库运行一次离线 `context` 命令。
-- 对当前仓库运行一次由 LangGraph 编排的离线 `ask` 命令。
-- 运行一次 OpenAI-backed 的 `ask` 命令，使用 suggest-only 模式。
-- 在一次性 fixture 中应用一个生成补丁，并验证测试通过。
+- 使用 `code-agent --workspace <dir> --provider offline --no-session` 完成一次离线交互。
+- 使用 OpenAI-backed 交互完成一次不应用补丁的问答。
+- 在一次性 fixture 中生成补丁，分别验证输入 `n` 不应用、输入 `y` 应用。
+- 验证 workspace 外路径和敏感路径补丁会被拒绝。

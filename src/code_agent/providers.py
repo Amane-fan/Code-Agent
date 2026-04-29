@@ -4,21 +4,14 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
+from importlib.resources import files
 from typing import Protocol
 
-from code_agent.env import get_env_file, get_repo_env, load_env_file
-from code_agent.models import RepoContext
+from code_agent.config import configured_model, configured_value
+from code_agent.models import WorkspaceContext
 
 
-SYSTEM_INSTRUCTIONS = (
-    "You are a cautious terminal coding agent.\n"
-    "Use the repository context to propose the smallest correct change.\n"
-    "When editing is needed, include exactly one fenced diff block with a "
-    "git-apply-compatible unified diff.\n"
-    "Do not include secrets. Prefer adding tests when behavior changes.\n"
-    "End with a short verification plan."
-)
+SYSTEM_INSTRUCTIONS = files("code_agent.prompts").joinpath("system.md").read_text(encoding="utf-8")
 
 DEFAULT_RESPONSES_API_URL = "https://api.openai.com/v1/responses"
 
@@ -30,7 +23,7 @@ class ModelProvider(Protocol):
     def name(self) -> str:
         ...
 
-    def complete(self, prompt: str, context: RepoContext, *, model: str) -> str:
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
         ...
 
 
@@ -40,7 +33,7 @@ class OfflineProvider:
 
     name: str = "offline"
 
-    def complete(self, prompt: str, context: RepoContext, *, model: str) -> str:
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
         files = ", ".join(file.path for file in context.files) or "no readable files"
         return (
             "Offline planning mode\n\n"
@@ -61,21 +54,18 @@ class OpenAIResponsesProvider:
 
     name: str = "openai"
 
-    def complete(self, prompt: str, context: RepoContext, *, model: str) -> str:
-        # Provider 调用前再加载一次仓库 .env，覆盖直接使用 Provider 的场景。
-        env_path = context.root / ".env"
-        load_env_file(env_path, override=True)
-        configured_model = get_env_file(env_path, "OPENAI_MODEL", "DASHSCOPE_MODEL")
-        if not configured_model:
-            raise RuntimeError("OPENAI_MODEL or DASHSCOPE_MODEL is required in .env")
-
-        api_key = get_env_file(env_path, "OPENAI_API_KEY", "DASHSCOPE_API_KEY")
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
+        selected_model = configured_model() or model
+        api_key = configured_value("OPENAI_API_KEY", "DASHSCOPE_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY or DASHSCOPE_API_KEY is required in .env")
+            raise RuntimeError(
+                "OPENAI_API_KEY or DASHSCOPE_API_KEY is required in Code-Agent .env "
+                "or process environment"
+            )
 
         # Responses API 使用 instructions 承载系统约束，input 承载用户任务和仓库上下文。
         payload = {
-            "model": configured_model,
+            "model": selected_model,
             "instructions": SYSTEM_INSTRUCTIONS,
             "input": [
                 {
@@ -85,7 +75,7 @@ class OpenAIResponsesProvider:
                             "type": "input_text",
                             "text": (
                                 f"User task:\n{prompt}\n\n"
-                                f"Repository context:\n{context.render(80_000)}"
+                                f"Workspace context:\n{context.render(80_000)}"
                             ),
                         }
                     ],
@@ -93,7 +83,7 @@ class OpenAIResponsesProvider:
             ],
         }
         request = urllib.request.Request(
-            _responses_api_url(context.root),
+            _responses_api_url(),
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -124,14 +114,14 @@ def make_provider(name: str) -> ModelProvider:
     raise ValueError(f"unknown provider: {name}")
 
 
-def _responses_api_url(repo_root: Path | None = None) -> str:
-    """根据仓库 .env 或当前环境中的 base_url 推导 Responses API 地址。"""
+def _responses_api_url() -> str:
+    """根据 Code-Agent 配置或当前环境中的 base_url 推导 Responses API 地址。"""
 
-    explicit_url = get_repo_env(repo_root, "OPENAI_RESPONSES_URL", "DASHSCOPE_RESPONSES_URL")
+    explicit_url = configured_value("OPENAI_RESPONSES_URL", "DASHSCOPE_RESPONSES_URL")
     if explicit_url:
         return explicit_url
 
-    base_url = get_repo_env(repo_root, "OPENAI_BASE_URL", "DASHSCOPE_BASE_URL")
+    base_url = configured_value("OPENAI_BASE_URL", "DASHSCOPE_BASE_URL")
     if base_url:
         return f"{base_url.rstrip('/')}/responses"
     return DEFAULT_RESPONSES_API_URL

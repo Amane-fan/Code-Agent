@@ -6,8 +6,8 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from code_agent.config import AgentConfig
-from code_agent.context import collect_repo_context
-from code_agent.models import AgentRun, RepoContext, ToolResult
+from code_agent.context import collect_workspace_context
+from code_agent.models import AgentRun, ToolResult, WorkspaceContext
 from code_agent.patches import PatchTool, extract_unified_diff
 from code_agent.providers import make_provider
 from code_agent.session import SessionStore
@@ -30,7 +30,7 @@ class AgentGraphState(TypedDict, total=False):
     test_command: str | None
     allow_unsafe_commands: bool
     save_session: bool
-    context: RepoContext
+    context: WorkspaceContext
     provider_name: str
     response_text: str
     patch: str | None
@@ -50,10 +50,10 @@ def build_agent_graph(config: AgentConfig) -> Any:
     graph = StateGraph(AgentGraphState)
 
     def collect_context(state: AgentGraphState) -> AgentGraphState:
-        """收集仓库上下文，作为后续模型调用的输入。"""
+        """收集 workspace 上下文，作为后续模型调用的输入。"""
 
-        context = collect_repo_context(
-            config.repo_root,
+        context = collect_workspace_context(
+            config.workspace_root,
             state["prompt"],
             max_files=config.max_files,
             max_file_bytes=config.max_file_bytes,
@@ -79,7 +79,7 @@ def build_agent_graph(config: AgentConfig) -> Any:
         patch = state.get("patch")
         if patch is None:
             return {"patch_check_result": None}
-        result = PatchTool(config.repo_root).check(patch)
+        result = PatchTool(config.workspace_root).check(patch)
         update: AgentGraphState = {"patch_check_result": result}
         if not result.ok:
             update["test_result"] = result
@@ -91,7 +91,7 @@ def build_agent_graph(config: AgentConfig) -> Any:
         patch = state.get("patch")
         if patch is None:
             return {"applied": False}
-        result = PatchTool(config.repo_root).apply(patch)
+        result = PatchTool(config.workspace_root).apply(patch)
         update: AgentGraphState = {"applied": result.ok}
         if not result.ok:
             update["test_result"] = result
@@ -100,10 +100,10 @@ def build_agent_graph(config: AgentConfig) -> Any:
     def run_tests_node(state: AgentGraphState) -> AgentGraphState:
         """补丁应用成功后运行测试，把测试输出纳入最终结果。"""
 
-        command = state.get("test_command") or detect_test_command(config.repo_root)
+        command = state.get("test_command") or detect_test_command(config.workspace_root)
         if command is None:
             return {"test_result": ToolResult("shell.run", False, error="no test command detected")}
-        result = ShellTool(config.repo_root).run(
+        result = ShellTool(config.workspace_root).run(
             command,
             allow_unsafe=state.get("allow_unsafe_commands", False),
         )

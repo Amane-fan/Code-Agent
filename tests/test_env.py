@@ -27,29 +27,46 @@ class EnvTests(unittest.TestCase):
                 self.assertEqual(os.environ["CODE_AGENT_TEST_EXISTING"], "from-env")
                 self.assertEqual(os.environ["CODE_AGENT_TEST_QUOTED"], "quoted value")
 
-    def test_agent_config_loads_repo_env_model(self) -> None:
+    def test_agent_config_loads_code_agent_env_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".env").write_text("DASHSCOPE_MODEL=qwen3.6-plus\n", encoding="utf-8")
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            config_env = Path(tmp) / "code-agent.env"
+            config_env.write_text("DASHSCOPE_MODEL=qwen3.6-plus\n", encoding="utf-8")
 
-            with patch.dict(os.environ, {}, clear=True):
-                config = AgentConfig(repo_path=root)
+            with patch.dict(os.environ, {"CODE_AGENT_ENV_FILE": str(config_env)}, clear=True):
+                config = AgentConfig(workspace_path=root)
 
             self.assertEqual(config.model, "qwen3.6-plus")
 
-    def test_agent_config_prefers_repo_env_model_over_process_env(self) -> None:
+    def test_agent_config_ignores_workspace_env_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".env").write_text("DASHSCOPE_MODEL=qwen-from-file\n", encoding="utf-8")
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            (root / ".env").write_text("DASHSCOPE_MODEL=workspace-model\n", encoding="utf-8")
+            config_env = Path(tmp) / "code-agent.env"
+            config_env.write_text("DASHSCOPE_MODEL=code-agent-model\n", encoding="utf-8")
 
-            with patch.dict(os.environ, {"OPENAI_MODEL": "model-from-shell"}, clear=True):
-                config = AgentConfig(repo_path=root)
+            with patch.dict(
+                os.environ,
+                {
+                    "CODE_AGENT_ENV_FILE": str(config_env),
+                    "OPENAI_MODEL": "model-from-shell",
+                },
+                clear=True,
+            ):
+                config = AgentConfig(workspace_path=root)
 
-            self.assertEqual(config.model, "qwen-from-file")
+            self.assertEqual(config.model, "code-agent-model")
 
     def test_agent_config_defaults_to_openai_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            config = AgentConfig(repo_path=Path(tmp))
+            with patch.dict(
+                os.environ,
+                {"CODE_AGENT_ENV_FILE": str(Path(tmp) / "missing.env")},
+                clear=True,
+            ):
+                config = AgentConfig(workspace_path=Path(tmp))
 
         self.assertEqual(config.provider, "openai")
 
@@ -60,7 +77,8 @@ class EnvTests(unittest.TestCase):
                 "DASHSCOPE_BASE_URL": (
                     "https://dashscope.aliyuncs.com/api/v2/apps/protocols/"
                     "compatible-mode/v1"
-                )
+                ),
+                "CODE_AGENT_ENV_FILE": "/tmp/code-agent-missing-env-for-test",
             },
             clear=True,
         ):

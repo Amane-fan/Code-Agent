@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from code_agent.context import collect_repo_context
+from code_agent.context import collect_workspace_context
 
 
 class ContextTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class ContextTests(unittest.TestCase):
             (root / "README.md").write_text("# Demo\n", encoding="utf-8")
             (root / ".env").write_text("OPENAI_API_KEY=secret-value\n", encoding="utf-8")
 
-            context = collect_repo_context(
+            context = collect_workspace_context(
                 root,
                 "fix billing invoice total",
                 max_files=5,

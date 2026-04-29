@@ -7,7 +7,7 @@ from pathlib import Path
 
 from code_agent.models import ToolResult
 from code_agent.security import (
-    ensure_within_repo,
+    ensure_within_workspace,
     is_safe_command,
     is_sensitive_path,
     redact_secrets,
@@ -16,14 +16,14 @@ from code_agent.security import (
 
 @dataclass(frozen=True)
 class FileTools:
-    """仓库文件工具，所有读取都会经过路径和敏感文件校验。"""
+    """Workspace 文件工具，所有读取都会经过路径和敏感文件校验。"""
 
-    repo_root: Path
+    workspace_root: Path
 
     def read(self, relative_path: str) -> ToolResult:
         try:
-            path = ensure_within_repo(self.repo_root, Path(relative_path))
-            rel = path.relative_to(self.repo_root)
+            path = ensure_within_workspace(self.workspace_root, Path(relative_path))
+            rel = path.relative_to(self.workspace_root)
             if is_sensitive_path(rel):
                 # 文件名命中敏感规则时直接拒绝读取，避免把凭据暴露给 Agent。
                 return ToolResult(
@@ -43,10 +43,10 @@ class FileTools:
 
     def list(self) -> ToolResult:
         files: list[str] = []
-        for path in sorted(self.repo_root.rglob("*")):
+        for path in sorted(self.workspace_root.rglob("*")):
             if not path.is_file():
                 continue
-            rel = path.relative_to(self.repo_root)
+            rel = path.relative_to(self.workspace_root)
             if is_sensitive_path(rel):
                 continue
             files.append(str(rel))
@@ -56,10 +56,10 @@ class FileTools:
         matches: list[str] = []
         lowered = pattern.lower()
         # MVP 使用标准库遍历文本；后续可以替换为 ripgrep 或符号索引。
-        for path in sorted(self.repo_root.rglob("*")):
+        for path in sorted(self.workspace_root.rglob("*")):
             if not path.is_file():
                 continue
-            rel = path.relative_to(self.repo_root)
+            rel = path.relative_to(self.workspace_root)
             if is_sensitive_path(rel):
                 continue
             try:
@@ -76,7 +76,7 @@ class FileTools:
 class ShellTool:
     """受限 shell 工具，默认只允许安全白名单里的命令。"""
 
-    repo_root: Path
+    workspace_root: Path
 
     def run(self, command: str, *, allow_unsafe: bool = False, timeout: int = 120) -> ToolResult:
         argv = shlex.split(command)
@@ -91,7 +91,7 @@ class ShellTool:
         try:
             result = subprocess.run(
                 argv,
-                cwd=self.repo_root,
+                cwd=self.workspace_root,
                 text=True,
                 capture_output=True,
                 timeout=timeout,
@@ -108,17 +108,17 @@ class ShellTool:
         )
 
 
-def detect_test_command(repo_root: Path) -> str | None:
-    """根据仓库特征推断最可能的测试命令。"""
+def detect_test_command(workspace_root: Path) -> str | None:
+    """根据 workspace 特征推断最可能的测试命令。"""
 
-    if (repo_root / "tests").is_dir():
+    if (workspace_root / "tests").is_dir():
         return "python -m unittest discover -s tests"
-    if (repo_root / "pyproject.toml").exists() or (repo_root / "pytest.ini").exists():
+    if (workspace_root / "pyproject.toml").exists() or (workspace_root / "pytest.ini").exists():
         return "python -m pytest"
-    if (repo_root / "package.json").exists():
+    if (workspace_root / "package.json").exists():
         return "npm test"
-    if (repo_root / "Cargo.toml").exists():
+    if (workspace_root / "Cargo.toml").exists():
         return "cargo test"
-    if (repo_root / "go.mod").exists():
+    if (workspace_root / "go.mod").exists():
         return "go test ./..."
     return None

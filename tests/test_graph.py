@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from code_agent.agent import CodingAgent
 from code_agent.config import AgentConfig
-from code_agent.models import RepoContext
+from code_agent.models import WorkspaceContext
 
 
 class FakeProvider:
@@ -17,7 +17,7 @@ class FakeProvider:
     def __init__(self, response: str) -> None:
         self.response = response
 
-    def complete(self, prompt: str, context: RepoContext, *, model: str) -> str:
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
         return self.response
 
 
@@ -44,7 +44,7 @@ class GraphTests(unittest.TestCase):
             root = Path(tmp)
             _init_repo(root)
 
-            run = CodingAgent(AgentConfig(repo_path=root, provider="offline")).run(
+            run = CodingAgent(AgentConfig(workspace_path=root, provider="offline")).run(
                 "总结项目",
                 save_session=False,
             )
@@ -63,7 +63,7 @@ class GraphTests(unittest.TestCase):
                 "code_agent.graph.make_provider",
                 return_value=FakeProvider(_replace_patch("old", "new")),
             ):
-                run = CodingAgent(AgentConfig(repo_path=root)).run(
+                run = CodingAgent(AgentConfig(workspace_path=root)).run(
                     "更新 app",
                     apply_patch=True,
                     save_session=False,
@@ -82,7 +82,7 @@ class GraphTests(unittest.TestCase):
                 "code_agent.graph.make_provider",
                 return_value=FakeProvider(_replace_patch("missing", "new")),
             ):
-                run = CodingAgent(AgentConfig(repo_path=root)).run(
+                run = CodingAgent(AgentConfig(workspace_path=root)).run(
                     "更新 app",
                     apply_patch=True,
                     run_tests=True,
@@ -116,7 +116,7 @@ class GraphTests(unittest.TestCase):
                 "code_agent.graph.make_provider",
                 return_value=FakeProvider(_replace_patch("old", "new")),
             ):
-                run = CodingAgent(AgentConfig(repo_path=root)).run(
+                run = CodingAgent(AgentConfig(workspace_path=root)).run(
                     "更新 app",
                     apply_patch=True,
                     run_tests=True,

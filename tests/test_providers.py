@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
-from code_agent.models import RepoContext
+from code_agent.models import WorkspaceContext
 from code_agent.providers import OpenAIResponsesProvider
 
 
@@ -24,16 +24,24 @@ class FakeResponse:
 
 
 class ProviderTests(unittest.TestCase):
-    def test_openai_provider_uses_repo_env_for_request_configuration(self) -> None:
+    def test_openai_provider_uses_code_agent_env_for_request_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp) / "workspace"
+            root.mkdir()
             (root / ".env").write_text(
+                "DASHSCOPE_API_KEY=workspace-key\n"
+                "DASHSCOPE_BASE_URL=https://workspace.example.test/v1\n"
+                "DASHSCOPE_MODEL=workspace-model\n",
+                encoding="utf-8",
+            )
+            config_env = Path(tmp) / "code-agent.env"
+            config_env.write_text(
                 "DASHSCOPE_API_KEY=file-key\n"
                 "DASHSCOPE_BASE_URL=https://dashscope.example.test/v1\n"
                 "DASHSCOPE_MODEL=qwen-from-file\n",
                 encoding="utf-8",
             )
-            context = RepoContext(root=root, prompt="task", git_status="", files=[])
+            context = WorkspaceContext(root=root, prompt="task", git_status="", files=[])
             captured: dict[str, object] = {}
 
             def fake_urlopen(request: urllib.request.Request, timeout: int) -> FakeResponse:
@@ -49,6 +57,7 @@ class ProviderTests(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
+                        "CODE_AGENT_ENV_FILE": str(config_env),
                         "OPENAI_API_KEY": "shell-key",
                         "OPENAI_BASE_URL": "https://openai.example.test/v1",
                         "OPENAI_MODEL": "model-from-shell",
@@ -71,14 +80,21 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(captured["authorization"], "Bearer file-key")
             self.assertEqual(captured["timeout"], 120)
 
-    def test_openai_provider_requires_model_in_repo_env(self) -> None:
+    def test_openai_provider_ignores_workspace_env_when_config_is_missing_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / ".env").write_text("DASHSCOPE_API_KEY=file-key\n", encoding="utf-8")
-            context = RepoContext(root=root, prompt="task", git_status="", files=[])
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            (root / ".env").write_text(
+                "DASHSCOPE_API_KEY=workspace-key\n"
+                "DASHSCOPE_MODEL=workspace-model\n",
+                encoding="utf-8",
+            )
+            config_env = Path(tmp) / "code-agent.env"
+            config_env.write_text("DASHSCOPE_MODEL=qwen-from-file\n", encoding="utf-8")
+            context = WorkspaceContext(root=root, prompt="task", git_status="", files=[])
 
-            with patch.dict(os.environ, {"OPENAI_MODEL": "model-from-shell"}, clear=True):
-                with self.assertRaisesRegex(RuntimeError, "MODEL.*\\.env"):
+            with patch.dict(os.environ, {"CODE_AGENT_ENV_FILE": str(config_env)}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "API_KEY"):
                     OpenAIResponsesProvider().complete(
                         "task",
                         context,

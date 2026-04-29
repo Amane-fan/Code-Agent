@@ -109,16 +109,22 @@ def is_sensitive_path(path: Path) -> bool:
     return False
 
 
-def ensure_within_repo(repo_root: Path, candidate: Path) -> Path:
-    """解析用户输入路径，并确保它没有逃逸出仓库根目录。"""
+def ensure_within_workspace(workspace_root: Path, candidate: Path) -> Path:
+    """解析用户输入路径，并确保它没有逃逸出 workspace 根目录。"""
 
     resolved = (
-        (repo_root / candidate).resolve()
+        (workspace_root / candidate).resolve()
         if not candidate.is_absolute()
         else candidate.resolve()
     )
-    resolved.relative_to(repo_root.resolve())
+    resolved.relative_to(workspace_root.resolve())
     return resolved
+
+
+def ensure_within_repo(repo_root: Path, candidate: Path) -> Path:
+    """向后兼容旧名称；新代码应使用 ensure_within_workspace。"""
+
+    return ensure_within_workspace(repo_root, candidate)
 
 
 def redact_secrets(text: str) -> str:
