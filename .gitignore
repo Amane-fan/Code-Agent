@@ -1,0 +1,40 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Coverage reports
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv
+venv/
+env/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
+# Test and tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local Code Agent sessions
+.code-agent/
+
+# Local Codex state
+.codex
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
