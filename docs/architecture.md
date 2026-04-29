@@ -4,7 +4,7 @@
 
 - CLI：解析命令参数并输出 Agent 执行结果。
 - 上下文收集器：按任务相关性排序可读仓库文件，并构建模型上下文。
-- Provider 层：支持确定性的离线规划模式，以及 OpenAI Responses API 调用。
+- Provider 层：默认使用 OpenAI 兼容 Responses API 调用，并保留确定性的离线规划模式。
 - 工具层：提供安全文件读取、搜索、shell 执行、测试命令检测和补丁应用能力。
 - LangGraph 工作流：使用 `StateGraph` 编排上下文收集、模型调用、diff 提取、补丁校验、补丁应用和测试执行。
 - 会话存储：将 JSON 运行日志写入 `.code-agent/sessions`。
@@ -14,7 +14,8 @@
 1. 用户运行 `code-agent ask "task"`。
 2. LangGraph 工作流从 `collect_context` 节点开始。
 3. `collect_context` 读取非敏感仓库文件和 Git 状态。
-4. `call_provider` 调用配置的 Provider，生成计划文本，并尽可能返回 `diff` fenced block。
+4. `call_provider` 调用配置的 Provider；默认 Provider 要求模型名和 API Key 来自仓库
+   `.env`，Base URL 优先读取 `.env`，然后生成计划文本，并尽可能返回 `diff` fenced block。
 5. `extract_patch` 从模型回复中解析 unified diff。
 6. 条件边决定是否进入 `check_patch`、`apply_patch` 和 `run_tests`。
 7. `check_patch` 使用 `git apply --check` 校验 unified diff。

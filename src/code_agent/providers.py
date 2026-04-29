@@ -4,9 +4,10 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
-from code_agent.env import get_env, load_env_file
+from code_agent.env import get_env_file, get_repo_env, load_env_file
 from code_agent.models import RepoContext
 
 
@@ -59,18 +60,22 @@ class OpenAIResponsesProvider:
     """通过 OpenAI 兼容的 Responses API 生成计划和补丁。"""
 
     name: str = "openai"
-    api_url: str | None = None
 
     def complete(self, prompt: str, context: RepoContext, *, model: str) -> str:
         # Provider 调用前再加载一次仓库 .env，覆盖直接使用 Provider 的场景。
-        load_env_file(context.root / ".env")
-        api_key = get_env("OPENAI_API_KEY", "DASHSCOPE_API_KEY")
+        env_path = context.root / ".env"
+        load_env_file(env_path, override=True)
+        configured_model = get_env_file(env_path, "OPENAI_MODEL", "DASHSCOPE_MODEL")
+        if not configured_model:
+            raise RuntimeError("OPENAI_MODEL or DASHSCOPE_MODEL is required in .env")
+
+        api_key = get_env_file(env_path, "OPENAI_API_KEY", "DASHSCOPE_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY or DASHSCOPE_API_KEY is required when provider=openai")
+            raise RuntimeError("OPENAI_API_KEY or DASHSCOPE_API_KEY is required in .env")
 
         # Responses API 使用 instructions 承载系统约束，input 承载用户任务和仓库上下文。
         payload = {
-            "model": model,
+            "model": configured_model,
             "instructions": SYSTEM_INSTRUCTIONS,
             "input": [
                 {
@@ -88,7 +93,7 @@ class OpenAIResponsesProvider:
             ],
         }
         request = urllib.request.Request(
-            self.api_url or _responses_api_url(),
+            _responses_api_url(context.root),
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -119,14 +124,14 @@ def make_provider(name: str) -> ModelProvider:
     raise ValueError(f"unknown provider: {name}")
 
 
-def _responses_api_url() -> str:
-    """根据 .env 中的 base_url 推导 Responses API 地址。"""
+def _responses_api_url(repo_root: Path | None = None) -> str:
+    """根据仓库 .env 或当前环境中的 base_url 推导 Responses API 地址。"""
 
-    explicit_url = get_env("OPENAI_RESPONSES_URL", "DASHSCOPE_RESPONSES_URL")
+    explicit_url = get_repo_env(repo_root, "OPENAI_RESPONSES_URL", "DASHSCOPE_RESPONSES_URL")
     if explicit_url:
         return explicit_url
 
-    base_url = get_env("OPENAI_BASE_URL", "DASHSCOPE_BASE_URL")
+    base_url = get_repo_env(repo_root, "OPENAI_BASE_URL", "DASHSCOPE_BASE_URL")
     if base_url:
         return f"{base_url.rstrip('/')}/responses"
     return DEFAULT_RESPONSES_API_URL

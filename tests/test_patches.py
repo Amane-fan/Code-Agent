@@ -23,6 +23,7 @@ diff --git a/app.py b/app.py
 """
         patch = extract_unified_diff(text)
         self.assertIsNotNone(patch)
+        assert patch is not None
         self.assertTrue(patch.startswith("diff --git a/app.py b/app.py"))
 
     def test_patch_tool_applies_git_patch(self) -> None:
@@ -46,4 +47,3 @@ diff --git a/app.py b/app.py
 
 if __name__ == "__main__":
     unittest.main()
-

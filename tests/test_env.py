@@ -37,6 +37,22 @@ class EnvTests(unittest.TestCase):
 
             self.assertEqual(config.model, "qwen3.6-plus")
 
+    def test_agent_config_prefers_repo_env_model_over_process_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("DASHSCOPE_MODEL=qwen-from-file\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {"OPENAI_MODEL": "model-from-shell"}, clear=True):
+                config = AgentConfig(repo_path=root)
+
+            self.assertEqual(config.model, "qwen-from-file")
+
+    def test_agent_config_defaults_to_openai_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AgentConfig(repo_path=Path(tmp))
+
+        self.assertEqual(config.provider, "openai")
+
     def test_responses_url_is_derived_from_base_url(self) -> None:
         with patch.dict(
             os.environ,

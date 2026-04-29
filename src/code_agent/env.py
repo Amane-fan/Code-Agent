@@ -11,20 +11,30 @@ def load_env_file(path: Path, *, override: bool = False) -> None:
     已存在的系统环境变量默认不会被覆盖，便于 CI 或命令行临时配置优先。
     """
 
+    values = read_env_file(path)
+    for key, value in values.items():
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+
+def read_env_file(path: Path) -> dict[str, str]:
+    """读取 .env 文件内容，不修改当前进程环境变量。"""
+
     if not path.exists():
-        return
+        return {}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return
+        return {}
 
+    values: dict[str, str] = {}
     for line in lines:
         parsed = _parse_env_line(line)
         if parsed is None:
             continue
         key, value = parsed
-        if override or key not in os.environ:
-            os.environ[key] = value
+        values[key] = value
+    return values
 
 
 def get_env(*names: str, default: str = "") -> str:
@@ -35,6 +45,27 @@ def get_env(*names: str, default: str = "") -> str:
         if value:
             return value
     return default
+
+
+def get_env_file(path: Path, *names: str, default: str = "") -> str:
+    """只从指定 .env 文件读取配置值。"""
+
+    values = read_env_file(path)
+    for name in names:
+        value = values.get(name)
+        if value:
+            return value
+    return default
+
+
+def get_repo_env(repo_root: Path | None, *names: str, default: str = "") -> str:
+    """优先读取仓库 .env，缺失时再回退到当前进程环境变量。"""
+
+    if repo_root is not None:
+        value = get_env_file(repo_root / ".env", *names)
+        if value:
+            return value
+    return get_env(*names, default=default)
 
 
 def _parse_env_line(line: str) -> tuple[str, str] | None:

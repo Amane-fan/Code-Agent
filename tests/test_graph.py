@@ -44,7 +44,10 @@ class GraphTests(unittest.TestCase):
             root = Path(tmp)
             _init_repo(root)
 
-            run = CodingAgent(AgentConfig(repo_path=root)).run("总结项目", save_session=False)
+            run = CodingAgent(AgentConfig(repo_path=root, provider="offline")).run(
+                "总结项目",
+                save_session=False,
+            )
 
             self.assertEqual(run.provider, "offline")
             self.assertIn("Offline planning mode", run.response_text)
@@ -88,8 +91,10 @@ class GraphTests(unittest.TestCase):
 
             self.assertFalse(run.applied)
             self.assertIsNotNone(run.test_result)
-            self.assertEqual(run.test_result.name, "patch.check")
-            self.assertFalse(run.test_result.ok)
+            test_result = run.test_result
+            assert test_result is not None
+            self.assertEqual(test_result.name, "patch.check")
+            self.assertFalse(test_result.ok)
             self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "actual\n")
 
     def test_applied_patch_can_run_detected_tests(self) -> None:
@@ -120,8 +125,10 @@ class GraphTests(unittest.TestCase):
 
             self.assertTrue(run.applied)
             self.assertIsNotNone(run.test_result)
-            self.assertTrue(run.test_result.ok)
-            self.assertEqual(run.test_result.name, "shell.run")
+            test_result = run.test_result
+            assert test_result is not None
+            self.assertTrue(test_result.ok)
+            self.assertEqual(test_result.name, "shell.run")
 
 
 if __name__ == "__main__":

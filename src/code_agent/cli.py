@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from code_agent.agent import CodingAgent
-from code_agent.config import AgentConfig
+from code_agent.config import DEFAULT_PROVIDER, AgentConfig
 from code_agent.context import collect_repo_context
 from code_agent.tools import FileTools, ShellTool, detect_test_command
 
@@ -44,12 +44,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ask.add_argument("prompt", help="Task for the coding agent.")
     ask.add_argument("--repo", default=".", help="Repository path.")
-    ask.add_argument("--provider", default="offline", choices=["offline", "openai"])
-    ask.add_argument(
-        "--model",
-        default=None,
-        help="Model name. Defaults to OPENAI_MODEL or project default.",
-    )
+    ask.add_argument("--provider", default=DEFAULT_PROVIDER, choices=["offline", "openai"])
     ask.add_argument(
         "--apply",
         action="store_true",
@@ -109,7 +104,6 @@ def _ask(args: argparse.Namespace) -> int:
         repo_path=Path(args.repo),
         provider=args.provider,
         max_files=args.max_files,
-        **({"model": args.model} if args.model else {}),
     )
     if args.apply and not args.yes:
         # 交互式确认是 --apply 的最后一道人为安全门。
