@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+pip-wheel-metadata/
 
 # Coverage reports
 .coverage
@@ -25,12 +26,24 @@ env/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.tox/
+.nox/
+.hypothesis/
+.pyre/
+.pytype/
+.dmypy.json
+dmypy.json
+.cache/
 
 # Local Code Agent sessions
 .code-agent/
 
 # Local Codex state
 .codex
+
+# Local scratch workspaces and logs
+workspace/
+*.log
 
 # Editor and OS files
 .idea/

@@ -17,7 +17,7 @@ class SessionStore:
     def save(self, run: AgentRun) -> Path:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         # 使用 UTC 时间戳保证文件名稳定且易排序。
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         path = self.session_dir / "sessions" / f"{timestamp}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         data = run.to_json_dict()

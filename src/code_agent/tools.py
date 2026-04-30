@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,7 +7,6 @@ from pathlib import Path
 from code_agent.models import ToolResult
 from code_agent.security import (
     ensure_within_workspace,
-    is_safe_command,
     is_sensitive_path,
     redact_secrets,
 )
@@ -27,17 +25,68 @@ class FileTools:
             if is_sensitive_path(rel):
                 # 文件名命中敏感规则时直接拒绝读取，避免把凭据暴露给 Agent。
                 return ToolResult(
-                    "file.read",
+                    "read_file",
                     False,
                     error=f"refusing to read sensitive path: {rel}",
                 )
             data = path.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:
-            return ToolResult("file.read", False, error=str(exc))
+            return ToolResult("read_file", False, error=str(exc))
         return ToolResult(
-            "file.read",
+            "read_file",
             True,
             output=redact_secrets(data),
+            metadata={"path": relative_path},
+        )
+
+    def write(self, relative_path: str, content: str) -> ToolResult:
+        try:
+            path = ensure_within_workspace(self.workspace_root, Path(relative_path))
+            rel = path.relative_to(self.workspace_root)
+            if is_sensitive_path(rel):
+                return ToolResult(
+                    "write_file",
+                    False,
+                    error=f"refusing to write sensitive path: {rel}",
+                )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            return ToolResult("write_file", False, error=str(exc))
+        return ToolResult(
+            "write_file",
+            True,
+            output=f"wrote {relative_path} ({len(content.encode('utf-8'))} bytes)",
+            metadata={"path": relative_path},
+        )
+
+    def edit(self, relative_path: str, old_text: str, new_text: str) -> ToolResult:
+        try:
+            path = ensure_within_workspace(self.workspace_root, Path(relative_path))
+            rel = path.relative_to(self.workspace_root)
+            if is_sensitive_path(rel):
+                return ToolResult(
+                    "edit_file",
+                    False,
+                    error=f"refusing to edit sensitive path: {rel}",
+                )
+            data = path.read_text(encoding="utf-8")
+            matches = data.count(old_text)
+            if matches != 1:
+                return ToolResult(
+                    "edit_file",
+                    False,
+                    error=f"old_text must be unique; found {matches} matches",
+                    metadata={"path": relative_path, "matches": matches},
+                )
+            updated = data.replace(old_text, new_text, 1)
+            path.write_text(updated, encoding="utf-8")
+        except Exception as exc:
+            return ToolResult("edit_file", False, error=str(exc))
+        return ToolResult(
+            "edit_file",
+            True,
+            output=f"edited {relative_path}",
             metadata={"path": relative_path},
         )
 
@@ -50,7 +99,7 @@ class FileTools:
             if is_sensitive_path(rel):
                 continue
             files.append(str(rel))
-        return ToolResult("file.list", True, output="\n".join(files))
+        return ToolResult("list_files", True, output="\n".join(files))
 
     def search(self, pattern: str) -> ToolResult:
         matches: list[str] = []
@@ -69,28 +118,32 @@ class FileTools:
             for line_number, line in enumerate(text.splitlines(), start=1):
                 if lowered in line.lower():
                     matches.append(f"{rel}:{line_number}: {line}")
-        return ToolResult("file.search", True, output=redact_secrets("\n".join(matches)))
+        return ToolResult("grep_search", True, output=redact_secrets("\n".join(matches)))
 
 
 @dataclass(frozen=True)
 class ShellTool:
-    """受限 shell 工具，默认只允许安全白名单里的命令。"""
+    """受用户确认保护的 shell 工具。"""
 
     workspace_root: Path
 
-    def run(self, command: str, *, allow_unsafe: bool = False, timeout: int = 120) -> ToolResult:
-        argv = shlex.split(command)
-        if not allow_unsafe and not is_safe_command(argv):
-            # 破坏性或未知命令需要显式 --unsafe，避免 Agent 默认执行高风险操作。
+    def run(
+        self,
+        command: str,
+        *,
+        approved: bool = False,
+        timeout: int = 120,
+    ) -> ToolResult:
+        if not approved:
             return ToolResult(
-                "shell.run",
+                "run_shell",
                 False,
-                error=f"command requires approval or --unsafe: {command}",
-                metadata={"argv": argv},
+                error=f"command requires user approval: {command}",
+                metadata={"command": command},
             )
         try:
             result = subprocess.run(
-                argv,
+                ["/bin/bash", "-lc", command],
                 cwd=self.workspace_root,
                 text=True,
                 capture_output=True,
@@ -98,27 +151,11 @@ class ShellTool:
                 check=False,
             )
         except Exception as exc:
-            return ToolResult("shell.run", False, error=str(exc), metadata={"argv": argv})
+            return ToolResult("run_shell", False, error=str(exc), metadata={"command": command})
         output = "\n".join(part for part in [result.stdout, result.stderr] if part)
         return ToolResult(
-            "shell.run",
+            "run_shell",
             result.returncode == 0,
             output=redact_secrets(output),
-            metadata={"argv": argv, "returncode": result.returncode},
+            metadata={"command": command, "returncode": result.returncode},
         )
-
-
-def detect_test_command(workspace_root: Path) -> str | None:
-    """根据 workspace 特征推断最可能的测试命令。"""
-
-    if (workspace_root / "tests").is_dir():
-        return "python -m unittest discover -s tests"
-    if (workspace_root / "pyproject.toml").exists() or (workspace_root / "pytest.ini").exists():
-        return "python -m pytest"
-    if (workspace_root / "package.json").exists():
-        return "npm test"
-    if (workspace_root / "Cargo.toml").exists():
-        return "cargo test"
-    if (workspace_root / "go.mod").exists():
-        return "go test ./..."
-    return None

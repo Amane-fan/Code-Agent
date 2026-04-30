@@ -1,33 +1,42 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from code_agent.config import AgentConfig
-from code_agent.graph import run_agent_graph
-from code_agent.models import AgentRun
+from code_agent.models import AgentEvent, AgentRun
+from code_agent.providers import make_provider
+from code_agent.react import ProviderFactory, run_react_agent
+
+
+ShellApproval = Callable[[str], bool]
+EventLogger = Callable[[AgentEvent], None]
 
 
 class CodingAgent:
-    """编排上下文收集、模型调用、补丁校验、补丁应用和测试反馈。"""
+    """执行单任务 ReAct 循环，并把工具 observation 回灌给模型。"""
 
-    def __init__(self, config: AgentConfig) -> None:
+    def __init__(
+        self,
+        config: AgentConfig,
+        *,
+        provider_factory: ProviderFactory | None = None,
+    ) -> None:
         self.config = config
+        self.provider_factory = provider_factory
 
     def run(
         self,
         prompt: str,
         *,
-        apply_patch: bool = False,
-        run_tests: bool = False,
-        test_command: str | None = None,
-        allow_unsafe_commands: bool = False,
+        shell_approval: ShellApproval | None = None,
+        event_logger: EventLogger | None = None,
         save_session: bool = True,
     ) -> AgentRun:
-        # 具体节点编排交给 LangGraph，外部接口保持稳定，CLI 和测试无需感知内部改造。
-        return run_agent_graph(
+        return run_react_agent(
             self.config,
             prompt,
-            apply_patch=apply_patch,
-            run_tests=run_tests,
-            test_command=test_command,
-            allow_unsafe_commands=allow_unsafe_commands,
+            provider_factory=self.provider_factory or make_provider,
+            shell_approval=shell_approval,
+            event_logger=event_logger,
             save_session=save_session,
         )

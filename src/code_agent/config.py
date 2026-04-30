@@ -51,7 +51,9 @@ class AgentConfig:
     max_files: int = 12
     max_file_bytes: int = 24_000
     max_context_chars: int = 80_000
+    max_iterations: int = 20
     session_dir_name: str = ".code-agent"
+    session_root: Path | None = None
 
     def __post_init__(self) -> None:
         # 模型调用配置只来自 Code-Agent 自身配置，目标 workspace 的 .env 不参与模型配置。
@@ -72,4 +74,6 @@ class AgentConfig:
     @property
     def session_dir(self) -> Path:
         # 会话日志属于 Code-Agent 自身状态，不写入目标 workspace。
+        if self.session_root is not None:
+            return self.session_root.expanduser().resolve()
         return CODE_AGENT_PROJECT_ROOT / self.session_dir_name

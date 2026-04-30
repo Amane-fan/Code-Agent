@@ -1,38 +1,43 @@
 # 工具协议
 
-## 通用返回结构
+## 模型输出
 
-每个工具都返回：
+每轮模型输出必须是以下两种之一：
+
+```text
+<think>简短公开思路摘要</think>
+<action>{"tool":"read_file","args":{"path":"README.md"}}</action>
+```
+
+或：
+
+```text
+<think>简短公开思路摘要</think>
+<final_answer>最终回答</final_answer>
+```
+
+`<action>` 内部必须是 JSON 对象，包含：
+
+- `tool`：工具名称。
+- `args`：参数对象。
+
+## 工具返回结构
+
+每个工具 observation 都包含：
 
 - `name`：稳定的工具名称。
 - `ok`：布尔成功标记。
 - `output`：面向人的 stdout 风格输出。
 - `error`：面向人的错误信息。
-- `metadata`：结构化细节，例如 argv 或 return code。
+- `metadata`：结构化细节，例如路径、命令或 return code。
 
-## 工具
+## 当前工具
 
-- `file.list`：列出 workspace 中的非敏感文件。
-- `file.read`：读取一个非敏感 UTF-8 文本文件。
-- `file.search`：在非敏感文件中执行大小写不敏感的文本搜索。
-- `shell.run`：默认只运行安全命令前缀。
-- `patch.check`：使用 `git apply --check` 校验 unified diff。
-- `patch.apply`：使用 `git apply` 应用已校验的 unified diff。
+- `read_file({"path": "relative/path"})`：读取一个非敏感 UTF-8 文本文件。
+- `write_file({"path": "relative/path", "content": "..."})`：创建或覆盖一个非敏感文本文件。
+- `edit_file({"path": "relative/path", "old_text": "...", "new_text": "..."})`：要求 `old_text` 唯一匹配后替换。
+- `list_files({})`：列出 workspace 中的非敏感文件。
+- `grep_search({"pattern": "text"})`：在非敏感文件中执行大小写不敏感的文本搜索。
+- `run_shell({"command": "..."})`：经用户确认后，在 workspace 下通过 `/bin/bash -lc` 执行命令。
 
-工具实现都绑定到启动时指定的 workspace 根目录。当前没有把它们暴露成由模型自由选择的
-`ToolNode`，这样可以让 MVP 行为更可预测，并保留现有安全门。
-
-## 补丁约定
-
-模型 Provider 应尽量输出一个 fenced diff block：
-
-```diff
-diff --git a/path b/path
---- a/path
-+++ b/path
-@@ -1 +1 @@
--old
-+new
-```
-
-如果补丁无法通过 `git apply --check`，或补丁路径逃逸出 workspace，Agent 会拒绝应用该补丁。
+所有工具实现都绑定到启动时指定的 workspace 根目录。

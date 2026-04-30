@@ -1,10 +1,11 @@
 # Code Agent
 
 Code Agent 是一个面向单一本地 workspace 的终端交互式 AI 编程助手。启动时必须指定目标
-workspace，之后可以连续输入任务；每轮都会收集该 workspace 内的非敏感上下文，调用模型生成回复，
-检测可能的 unified diff，并在补丁校验通过后询问是否应用。
+workspace，之后可以连续输入任务；每条任务都会开启独立 ReAct 会话，模型根据需要调用受控工具，
+工具结果会作为 `<observation>` 加入历史并回传给模型，直到模型输出 `<final_answer>`。
 
-当前 MVP 使用 LangGraph `StateGraph` 编排 Agent 工作流，同时保留受限工具层、补丁校验和会话日志。
+当前 MVP 不使用 LangGraph。核心编排是普通 `while True` 循环，并实时记录 Agent 行为标签：
+`<task>`、`<think>`、`<action>`、`<observation>`、`<final_answer>`。
 
 ## 快速开始
 
@@ -25,7 +26,7 @@ code-agent --workspace /path/to/target-project
 code-agent>
 ```
 
-输入普通文本会触发一轮 Agent 任务；输入 `/exit` 或 `/quit` 退出。空输入会被忽略。
+输入普通文本会触发一次独立 Agent 任务；输入 `/exit` 或 `/quit` 退出。空输入会被忽略。
 
 ## 大模型配置
 
@@ -60,34 +61,47 @@ CLI 只保留顶层交互式启动参数：
 
 - `--workspace`：必填，指定 Agent 可观察和可修改的目标 workspace。
 - `--provider`：模型提供方，默认 `openai`，可选 `offline`。
-- `--max-files`：每轮最多发送给模型的上下文文件数。
 - `--no-session`：不写入会话日志。
-- `--unsafe`：保留为会话级选项，用于允许 workspace 内未来的高风险测试命令。
 
 旧入口 `ask`、`context`、`tool` 已移除。
 
-## 交互式补丁处理
+## ReAct 工具循环
 
-如果模型回复中包含 diff，CLI 会自动执行以下流程：
-
-```text
-git apply --check
-Apply patch? [y/N]
-```
-
-只有校验通过且用户输入 `y` 或 `yes` 时，补丁才会应用到目标 workspace。校验失败时只打印错误，
-不会修改文件。
-
-## LangGraph 工作流
-
-每轮用户输入底层由 LangGraph `StateGraph` 编排：
+每条用户任务底层执行如下循环：
 
 ```text
-collect_context -> call_provider -> extract_patch -> finalize_run
+while True:
+  call_provider(history)
+  if response has <action>:
+    execute tool
+    append <observation>
+    continue
+  append <final_answer>
+  break
 ```
 
-交互式 CLI 在图执行结束后处理补丁校验和用户确认。所有上下文收集、补丁校验、补丁应用和测试命令
-检测都绑定到 `--workspace` 指定的目录。
+模型每轮只能选择一个工具调用，工具调用格式为：
+
+```text
+<action>{"tool":"read_file","args":{"path":"README.md"}}</action>
+```
+
+当前仅提供这些工具：
+
+- `read_file`
+- `write_file`
+- `edit_file`
+- `list_files`
+- `grep_search`
+- `run_shell`
+
+其中 `run_shell` 每次执行前都会在 CLI 中询问用户确认。文件写入工具会限制在 workspace 内，并拒绝触碰
+敏感路径。
+
+## 会话日志
+
+默认每次任务会把完整行为历史保存到 Code-Agent 项目自身的 `.code-agent/sessions`，同时 CLI 实时打印
+对应标签日志。每次 `code-agent>` 输入都是独立会话，不继承上一条任务的历史。
 
 ## 项目文档
 

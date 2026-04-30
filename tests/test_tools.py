@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from code_agent.tools import FileTools, ShellTool, detect_test_command
+from code_agent.tools import FileTools, ShellTool
 
 
 class ToolTests(unittest.TestCase):
@@ -26,24 +26,49 @@ class ToolTests(unittest.TestCase):
 
             self.assertFalse(result.ok)
 
+    def test_file_tools_write_file_creates_and_overwrites(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tools = FileTools(root)
+
+            created = tools.write("app.py", "print('hello')\n")
+            overwritten = tools.write("app.py", "print('bye')\n")
+
+            self.assertTrue(created.ok)
+            self.assertTrue(overwritten.ok)
+            self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "print('bye')\n")
+
+    def test_file_tools_edit_requires_unique_old_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app.py").write_text("value = 1\nvalue = 1\n", encoding="utf-8")
+            tools = FileTools(root)
+
+            ambiguous = tools.edit("app.py", "value = 1", "value = 2")
+            precise = tools.edit("app.py", "value = 1\nvalue = 1\n", "value = 2\n")
+
+            self.assertFalse(ambiguous.ok)
+            self.assertIn("unique", ambiguous.error)
+            self.assertTrue(precise.ok)
+            self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "value = 2\n")
+
+    def test_shell_tool_requires_approval_and_runs_via_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tool = ShellTool(root)
+
+            denied = tool.run("printf hello > out.txt", approved=False)
+            allowed = tool.run("printf hello > out.txt", approved=True)
+
+            self.assertFalse(denied.ok)
+            self.assertIn("approval", denied.error)
+            self.assertTrue(allowed.ok)
+            self.assertEqual((root / "out.txt").read_text(encoding="utf-8"), "hello")
+
     def test_shell_tool_requires_safe_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = ShellTool(Path(tmp)).run("rm -rf .")
             self.assertFalse(result.ok)
-
-    def test_detect_test_command_for_python_project(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
-            (root / "tests").mkdir()
-            self.assertEqual(detect_test_command(root), "python -m unittest discover -s tests")
-
-    def test_detect_test_command_for_pytest_project_without_tests_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
-            self.assertEqual(detect_test_command(root), "python -m pytest")
-
 
 if __name__ == "__main__":
     unittest.main()

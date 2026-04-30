@@ -71,24 +71,6 @@ BINARY_EXTENSIONS = {
     ".zip",
 }
 
-# 默认允许的命令前缀只覆盖只读 Git 操作和常见测试命令。
-SAFE_COMMAND_PREFIXES = (
-    ("git", "status"),
-    ("git", "diff"),
-    ("git", "ls-files"),
-    ("python", "-m", "unittest"),
-    ("python", "-m", "pytest"),
-    ("python3", "-m", "unittest"),
-    ("python3", "-m", "pytest"),
-    ("pytest",),
-    ("npm", "test"),
-    ("npm", "run", "test"),
-    ("pnpm", "test"),
-    ("yarn", "test"),
-    ("cargo", "test"),
-    ("go", "test"),
-)
-
 SECRET_PATTERNS = [
     re.compile(r"(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*['\"]?([A-Za-z0-9_\-./+=]{16,})"),
     re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
@@ -142,10 +124,3 @@ def _redact_match(match: re.Match[str]) -> str:
     secret = match.group(match.lastindex)
     return match.group(0).replace(secret, "[REDACTED]")
 
-
-def is_safe_command(argv: list[str]) -> bool:
-    """检查 shell 命令是否匹配安全白名单前缀。"""
-
-    if not argv:
-        return False
-    return any(tuple(argv[: len(prefix)]) == prefix for prefix in SAFE_COMMAND_PREFIXES)

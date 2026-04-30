@@ -15,27 +15,19 @@ from code_agent.models import WorkspaceContext
 class FakeProvider:
     name = "fake"
 
-    def __init__(self, response: str = "default provider response") -> None:
-        self.response = response
+    def __init__(self, responses: list[str] | None = None) -> None:
+        self.responses = responses or ["<think>完成。</think>\n<final_answer>default provider response</final_answer>"]
+        self.prompts: list[str] = []
 
     def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
-        return self.response
+        self.prompts.append(prompt)
+        if not self.responses:
+            raise AssertionError("provider called too many times")
+        return self.responses.pop(0)
 
 
 def _init_repo(root: Path) -> None:
     subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-
-
-def _replace_patch(old: str, new: str) -> str:
-    return f"""```diff
-diff --git a/app.py b/app.py
---- a/app.py
-+++ b/app.py
-@@ -1 +1 @@
--{old}
-+{new}
-```
-"""
 
 
 class CliTests(unittest.TestCase):
@@ -67,9 +59,10 @@ class CliTests(unittest.TestCase):
             root = Path(tmp)
             (root / "README.md").write_text("# Demo\n", encoding="utf-8")
             stdout = StringIO()
+            provider = FakeProvider()
             with (
                 patch("builtins.input", side_effect=["总结项目", "/quit"]),
-                patch("code_agent.graph.make_provider", return_value=FakeProvider()) as make_provider,
+                patch("code_agent.agent.make_provider", return_value=provider) as make_provider,
                 redirect_stdout(stdout),
                 redirect_stderr(StringIO()),
             ):
@@ -78,73 +71,58 @@ class CliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             make_provider.assert_called_once_with("openai")
             self.assertIn("default provider response", stdout.getvalue())
+            self.assertIn("<task>总结项目</task>", stdout.getvalue())
+            self.assertIn("<final_answer>default provider response</final_answer>", stdout.getvalue())
 
-    def test_interactive_patch_can_be_rejected_after_check(self) -> None:
+    def test_interactive_shell_command_can_be_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _init_repo(root)
-            (root / "app.py").write_text("old\n", encoding="utf-8")
+            provider = FakeProvider(
+                [
+                    '<think>需要运行命令。</think>\n'
+                    '<action>{"tool":"run_shell","args":{"command":"printf hello > out.txt"}}</action>',
+                    "<think>命令被拒绝，停止。</think>\n<final_answer>not run</final_answer>",
+                ]
+            )
 
             stdout = StringIO()
             with (
-                patch("builtins.input", side_effect=["更新 app", "n", "/exit"]),
-                patch(
-                    "code_agent.graph.make_provider",
-                    return_value=FakeProvider(_replace_patch("old", "new")),
-                ),
+                patch("builtins.input", side_effect=["运行命令", "n", "/exit"]),
+                patch("code_agent.agent.make_provider", return_value=provider),
                 redirect_stdout(stdout),
                 redirect_stderr(StringIO()),
             ):
                 exit_code = main(["--workspace", str(root), "--no-session"])
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "old\n")
-            self.assertIn("Patch check: ok", stdout.getvalue())
-            self.assertIn("Patch not applied.", stdout.getvalue())
+            self.assertFalse((root / "out.txt").exists())
+            self.assertIn("<action>", stdout.getvalue())
+            self.assertIn("command requires user approval", stdout.getvalue())
+            self.assertIn("<final_answer>not run</final_answer>", stdout.getvalue())
 
-    def test_interactive_patch_can_be_applied_after_check(self) -> None:
+    def test_interactive_shell_command_can_be_approved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            _init_repo(root)
-            (root / "app.py").write_text("old\n", encoding="utf-8")
+            provider = FakeProvider(
+                [
+                    '<think>需要运行命令。</think>\n'
+                    '<action>{"tool":"run_shell","args":{"command":"printf hello > out.txt"}}</action>',
+                    "<think>命令完成。</think>\n<final_answer>ran</final_answer>",
+                ]
+            )
 
             stdout = StringIO()
             with (
-                patch("builtins.input", side_effect=["更新 app", "y", "/exit"]),
-                patch(
-                    "code_agent.graph.make_provider",
-                    return_value=FakeProvider(_replace_patch("old", "new")),
-                ),
+                patch("builtins.input", side_effect=["运行命令", "y", "/exit"]),
+                patch("code_agent.agent.make_provider", return_value=provider),
                 redirect_stdout(stdout),
                 redirect_stderr(StringIO()),
             ):
                 exit_code = main(["--workspace", str(root), "--no-session"])
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "new\n")
-            self.assertIn("Patch applied.", stdout.getvalue())
-
-    def test_interactive_patch_check_failure_does_not_prompt_or_apply(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            _init_repo(root)
-            (root / "app.py").write_text("actual\n", encoding="utf-8")
-
-            stdout = StringIO()
-            with (
-                patch("builtins.input", side_effect=["更新 app", "/exit"]),
-                patch(
-                    "code_agent.graph.make_provider",
-                    return_value=FakeProvider(_replace_patch("missing", "new")),
-                ),
-                redirect_stdout(stdout),
-                redirect_stderr(StringIO()),
-            ):
-                exit_code = main(["--workspace", str(root), "--no-session"])
-
-            self.assertEqual(exit_code, 0)
-            self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "actual\n")
-            self.assertIn("Patch check: failed", stdout.getvalue())
+            self.assertEqual((root / "out.txt").read_text(encoding="utf-8"), "hello")
+            self.assertIn("<final_answer>ran</final_answer>", stdout.getvalue())
 
 
 if __name__ == "__main__":

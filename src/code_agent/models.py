@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,38 @@ class ToolResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+EventKind = Literal["task", "think", "action", "observation", "final_answer"]
+
+
+@dataclass(frozen=True)
+class AgentEvent:
+    """ReAct 循环中的一条可审计历史事件。"""
+
+    kind: EventKind
+    content: str
+    tool: str | None = None
+    args: dict[str, Any] = field(default_factory=dict)
+    result: ToolResult | None = None
+
+    @property
+    def tag(self) -> str:
+        return f"<{self.kind}>{self.content}</{self.kind}>"
+
+    def to_json_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "kind": self.kind,
+            "content": self.content,
+            "tag": self.tag,
+        }
+        if self.tool is not None:
+            data["tool"] = self.tool
+        if self.args:
+            data["args"] = self.args
+        if self.result is not None:
+            data["result"] = asdict(self.result)
+        return data
+
+
 @dataclass(frozen=True)
 class AgentRun:
     """一次 Agent 执行的完整记录，可直接序列化为会话日志。"""
@@ -62,18 +94,17 @@ class AgentRun:
     prompt: str
     provider: str
     model: str
+    final_answer: str
     response_text: str
-    patch: str | None
-    applied: bool
-    context_files: list[str]
-    test_result: ToolResult | None = None
+    history: list[AgentEvent]
+    iterations: int
+    context_files: list[str] = field(default_factory=list)
     session_path: Path | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         # dataclass 默认会保留 Path 对象，这里转换成 JSON 更友好的字符串。
         data = asdict(self)
+        data["history"] = [event.to_json_dict() for event in self.history]
         if self.session_path is not None:
             data["session_path"] = str(self.session_path)
-        if self.test_result is not None:
-            data["test_result"] = asdict(self.test_result)
         return data

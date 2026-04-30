@@ -1,12 +1,10 @@
 [project]
 name = "code-agent"
 version = "0.1.0"
-description = "A terminal-first AI coding agent with repo-aware context, safe tools, patch review, and test feedback."
+description = "A terminal-first AI coding agent with ReAct tool loops, workspace-safe file tools, and session logs."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "langgraph>=1.1,<2",
-]
+dependencies = []
 
 [project.optional-dependencies]
 ui = [

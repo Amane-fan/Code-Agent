@@ -34,23 +34,15 @@ class OfflineProvider:
     name: str = "offline"
 
     def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
-        files = ", ".join(file.path for file in context.files) or "no readable files"
         return (
-            "Offline planning mode\n\n"
-            f"Task: {prompt}\n\n"
-            "Relevant files inspected:\n"
-            f"{files}\n\n"
-            "Suggested next steps:\n"
-            "1. Review the files above and identify the smallest behavior change.\n"
-            "2. Ask the OpenAI provider to generate a unified diff, or write the patch manually.\n"
-            "3. Run the detected test command before committing.\n\n"
-            "No patch was generated because the offline provider does not call an LLM."
+            "<think>离线模式不会调用远端模型或主动选择工具。</think>\n"
+            "<final_answer>Offline mode received the task and produced no tool actions.</final_answer>"
         )
 
 
 @dataclass(frozen=True)
 class OpenAIResponsesProvider:
-    """通过 OpenAI 兼容的 Responses API 生成计划和补丁。"""
+    """通过 OpenAI 兼容的 Responses API 生成 ReAct 下一步输出。"""
 
     name: str = "openai"
 
@@ -63,7 +55,7 @@ class OpenAIResponsesProvider:
                 "or process environment"
             )
 
-        # Responses API 使用 instructions 承载系统约束，input 承载用户任务和仓库上下文。
+        # Responses API 使用 instructions 承载系统约束，input 承载 ReAct 历史和 workspace 边界。
         payload = {
             "model": selected_model,
             "instructions": SYSTEM_INSTRUCTIONS,
