@@ -7,6 +7,7 @@ from pathlib import Path
 from code_agent.agent import CodingAgent
 from code_agent.config import DEFAULT_PROVIDER, AgentConfig
 from code_agent.models import AgentEvent
+from code_agent.terminal import enable_line_editing, preserve_stdin_terminal
 
 
 EXIT_COMMANDS = {"/exit", "/quit"}
@@ -45,6 +46,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _interactive(args: argparse.Namespace) -> int:
+    enable_line_editing()
     config = AgentConfig(
         workspace_path=Path(args.workspace),
         provider=args.provider,
@@ -53,7 +55,7 @@ def _interactive(args: argparse.Namespace) -> int:
 
     while True:
         try:
-            prompt = input("code-agent> ")
+            prompt = _read_input("code-agent> ")
         except EOFError:
             print()
             return 0
@@ -79,8 +81,13 @@ def _print_event(event: AgentEvent) -> None:
 
 
 def _confirm_shell_command(command: str) -> bool:
-    answer = input(f"Run shell command? {command}\nApprove? [y/N] ").strip().lower()
+    answer = _read_input(f"Run shell command? {command}\nApprove? [y/N] ").strip().lower()
     return answer in {"y", "yes"}
+
+
+def _read_input(prompt: str) -> str:
+    with preserve_stdin_terminal():
+        return input(prompt)
 
 
 if __name__ == "__main__":

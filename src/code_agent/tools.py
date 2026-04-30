@@ -10,6 +10,7 @@ from code_agent.security import (
     is_sensitive_path,
     redact_secrets,
 )
+from code_agent.terminal import preserve_stdin_terminal
 
 
 @dataclass(frozen=True)
@@ -142,14 +143,15 @@ class ShellTool:
                 metadata={"command": command},
             )
         try:
-            result = subprocess.run(
-                ["/bin/bash", "-lc", command],
-                cwd=self.workspace_root,
-                text=True,
-                capture_output=True,
-                timeout=timeout,
-                check=False,
-            )
+            with preserve_stdin_terminal():
+                result = subprocess.run(
+                    ["/bin/bash", "-lc", command],
+                    cwd=self.workspace_root,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                    check=False,
+                )
         except Exception as exc:
             return ToolResult("run_shell", False, error=str(exc), metadata={"command": command})
         output = "\n".join(part for part in [result.stdout, result.stderr] if part)

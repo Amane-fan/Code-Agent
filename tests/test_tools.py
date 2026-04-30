@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import sys
+import termios
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from code_agent.tools import FileTools, ShellTool
 
@@ -69,6 +72,24 @@ class ToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = ShellTool(Path(tmp)).run("rm -rf .")
             self.assertFalse(result.ok)
+
+    def test_shell_tool_restores_terminal_state_after_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            saved_attrs = ["saved-terminal-state"]
+
+            with (
+                patch.object(sys.stdin, "isatty", return_value=True),
+                patch.object(sys.stdin, "fileno", return_value=42),
+                patch("termios.tcgetattr", return_value=saved_attrs) as get_attrs,
+                patch("termios.tcsetattr") as set_attrs,
+            ):
+                result = ShellTool(root).run("printf hello", approved=True)
+
+            self.assertTrue(result.ok)
+            get_attrs.assert_called_once_with(42)
+            set_attrs.assert_called_once_with(42, termios.TCSADRAIN, saved_attrs)
+
 
 if __name__ == "__main__":
     unittest.main()
