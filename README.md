@@ -5,7 +5,7 @@ workspace，之后可以连续输入任务；每条任务都会开启独立 ReAc
 工具结果会作为 `<observation>` 加入历史并回传给模型，直到模型输出 `<final_answer>`。
 
 当前 MVP 不使用 LangGraph。核心编排是普通 `while True` 循环，并实时记录 Agent 行为标签：
-`<task>`、`<think>`、`<action>`、`<observation>`、`<final_answer>`。
+`<task>`、`<summary>`、`<action>`、`<observation>`、`<final_answer>`。
 
 ## 快速开始
 

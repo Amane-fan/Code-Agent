@@ -5,14 +5,14 @@
 每轮模型输出必须是以下两种之一：
 
 ```text
-<think>简短公开思路摘要</think>
+<summary>简短公开思路摘要</summary>
 <action>{"tool":"read_file","args":{"path":"README.md"}}</action>
 ```
 
 或：
 
 ```text
-<think>简短公开思路摘要</think>
+<summary>简短公开思路摘要</summary>
 <final_answer>最终回答</final_answer>
 ```
 

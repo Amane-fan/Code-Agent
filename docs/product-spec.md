@@ -9,7 +9,7 @@
 
 - 作为开发者，我可以用 `code-agent --workspace <dir>` 启动一个绑定到单一 workspace 的交互会话。
 - 作为开发者，我可以连续输入问题或修改请求，每条输入都有独立上下文。
-- 作为开发者，我可以看到 Agent 的 `<task>`、`<think>`、`<action>`、`<observation>`、`<final_answer>` 行为日志。
+- 作为开发者，我可以看到 Agent 的 `<task>`、`<summary>`、`<action>`、`<observation>`、`<final_answer>` 行为日志。
 - 作为开发者，我可以让模型通过 `read_file`、`write_file`、`edit_file`、`list_files`、`grep_search` 检查或修改文件。
 - 作为开发者，我可以在模型请求 `run_shell` 时手动确认是否执行命令。
 - 作为开发者，我可以确信目标 workspace 的 `.env` 不会影响 Agent 的模型配置或系统 prompt。

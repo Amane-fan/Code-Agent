@@ -14,8 +14,8 @@
 1. 用户运行 `code-agent --workspace /path/to/target-project`。
 2. CLI 进入交互式循环，等待 `code-agent>` 输入。
 3. 用户输入普通文本后，Runner 创建独立历史并追加 `<task>`。
-4. Runner 把完整历史、工具协议和 workspace 边界发送给 Provider。
-5. Provider 返回 `<think>` 加 `<action>` 或 `<final_answer>`。
+4. Runner 把本次任务内的最小标签历史发送给 Provider。
+5. Provider 返回 `<summary>` 加 `<action>` 或 `<final_answer>`。
 6. 如果返回 `<action>`，Runner 执行工具，把结果作为 `<observation>` 追加到历史，然后继续循环。
 7. 如果返回 `<final_answer>`，Runner 保存会话并结束本次任务。
 8. 如果模型连续调用工具超过 20 轮，Runner 生成错误型 `<final_answer>` 并结束。
