@@ -52,25 +52,124 @@ class ReactLoopTests(unittest.TestCase):
             self.assertNotIn("Tool schemas", provider.prompts[0])
             self.assertNotIn("Workspace:", provider.prompts[0])
 
-    def test_each_run_has_independent_history(self) -> None:
+    def test_same_agent_remembers_previous_turns_but_new_agent_starts_clean(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            first_provider = SequencedProvider(["<summary>完成。</summary>\n<final_answer>first</final_answer>"])
-            second_provider = SequencedProvider(["<summary>完成。</summary>\n<final_answer>second</final_answer>"])
+            window_provider = SequencedProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                ]
+            )
+            clean_provider = SequencedProvider(
+                ["<summary>完成。</summary>\n<final_answer>clean answer</final_answer>"]
+            )
             config = AgentConfig(workspace_path=root, provider="offline")
 
-            CodingAgent(config, provider_factory=lambda name: first_provider).run(
+            agent = CodingAgent(config, provider_factory=lambda name: window_provider)
+            agent.run(
                 "first task",
                 save_session=False,
             )
-            CodingAgent(config, provider_factory=lambda name: second_provider).run(
+            agent.run(
                 "second task",
                 save_session=False,
             )
+            CodingAgent(config, provider_factory=lambda name: clean_provider).run(
+                "clean task",
+                save_session=False,
+            )
 
-            self.assertIn("<task>first task</task>", first_provider.prompts[0])
-            self.assertIn("<task>second task</task>", second_provider.prompts[0])
-            self.assertNotIn("first task", second_provider.prompts[0])
+            self.assertIn("<task>first task</task>", window_provider.prompts[0])
+            self.assertIn("<task>second task</task>", window_provider.prompts[1])
+            self.assertIn("<final_answer>first answer</final_answer>", window_provider.prompts[1])
+            self.assertIn("<task>clean task</task>", clean_provider.prompts[0])
+            self.assertNotIn("first task", clean_provider.prompts[0])
+
+    def test_manual_compact_uses_model_summary_and_keeps_recent_turns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = SequencedProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
+                    "<summary>压缩完成。</summary>\n<final_answer>remember first task</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>fourth answer</final_answer>",
+                ]
+            )
+            agent = CodingAgent(
+                AgentConfig(workspace_path=root, provider="offline"),
+                provider_factory=lambda name: provider,
+            )
+
+            agent.run("first task", save_session=False)
+            agent.run("second task", save_session=False)
+            agent.run("third task", save_session=False)
+            result = agent.compact_memory()
+            agent.run("fourth task", save_session=False)
+
+            self.assertTrue(result.compacted)
+            self.assertFalse(result.used_fallback)
+            self.assertEqual(result.summary, "remember first task")
+            self.assertIn("<memory>remember first task</memory>", provider.prompts[-1])
+            self.assertNotIn("<task>first task</task>", provider.prompts[-1])
+            self.assertIn("<task>second task</task>", provider.prompts[-1])
+            self.assertIn("<task>third task</task>", provider.prompts[-1])
+            self.assertIn("<task>fourth task</task>", provider.prompts[-1])
+
+    def test_compact_falls_back_when_model_summary_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = SequencedProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
+                ]
+            )
+            agent = CodingAgent(
+                AgentConfig(workspace_path=root, provider="offline"),
+                provider_factory=lambda name: provider,
+            )
+
+            agent.run("first task", save_session=False)
+            agent.run("second task", save_session=False)
+            agent.run("third task", save_session=False)
+            result = agent.compact_memory()
+
+            self.assertTrue(result.compacted)
+            self.assertTrue(result.used_fallback)
+            self.assertIn("first task", result.summary)
+            self.assertIn("first answer", result.summary)
+
+    def test_auto_compact_when_conversation_exceeds_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = SequencedProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                    "<summary>压缩完成。</summary>\n<final_answer>auto memory</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
+                ]
+            )
+            agent = CodingAgent(
+                AgentConfig(
+                    workspace_path=root,
+                    provider="offline",
+                    max_conversation_chars=1,
+                    recent_turns_to_keep=1,
+                ),
+                provider_factory=lambda name: provider,
+            )
+
+            agent.run("first task", save_session=False)
+            agent.run("second task", save_session=False)
+            agent.run("third task", save_session=False)
+
+            self.assertIn("auto memory", agent.memory_status())
+            self.assertIn("<memory>auto memory</memory>", provider.prompts[-1])
 
     def test_invalid_action_json_returns_observation_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -157,6 +256,40 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(data["history"][0]["tag"], "<task>task</task>")
             self.assertEqual(data["history"][1]["tag"], "<summary>完成。</summary>")
             self.assertEqual(data["history"][-1]["tag"], "<final_answer>answer</final_answer>")
+
+    def test_same_agent_writes_multiple_runs_to_one_session_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            session_root = Path(tmp) / "sessions"
+            provider = SequencedProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                ]
+            )
+            agent = CodingAgent(
+                AgentConfig(
+                    workspace_path=root,
+                    provider="offline",
+                    session_root=session_root,
+                ),
+                provider_factory=lambda name: provider,
+            )
+
+            first = agent.run("first task", save_session=True)
+            second = agent.run("second task", save_session=True)
+
+            self.assertEqual(first.session_path, second.session_path)
+            session_files = list((session_root / "sessions").glob("*.json"))
+            self.assertEqual(len(session_files), 1)
+            data = json.loads(session_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(data["session_path"], str(session_files[0]))
+            self.assertEqual(len(data["runs"]), 2)
+            self.assertEqual(data["runs"][0]["prompt"], "first task")
+            self.assertEqual(data["runs"][1]["prompt"], "second task")
+            second_history_tags = [event["tag"] for event in data["runs"][1]["history"]]
+            self.assertIn("<final_answer>first answer</final_answer>", second_history_tags)
 
 
 if __name__ == "__main__":

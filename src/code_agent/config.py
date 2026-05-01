@@ -51,6 +51,8 @@ class AgentConfig:
     max_files: int = 12
     max_file_bytes: int = 24_000
     max_context_chars: int = 80_000
+    max_conversation_chars: int = 60_000
+    recent_turns_to_keep: int = 2
     max_iterations: int = 20
     session_dir_name: str = ".code-agent"
     session_root: Path | None = None

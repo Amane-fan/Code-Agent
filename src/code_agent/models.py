@@ -55,7 +55,7 @@ class ToolResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-EventKind = Literal["task", "summary", "action", "observation", "final_answer"]
+EventKind = Literal["memory", "task", "summary", "action", "observation", "final_answer"]
 
 
 @dataclass(frozen=True)

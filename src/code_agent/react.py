@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 from code_agent.config import AgentConfig
 from code_agent.models import AgentEvent, AgentRun, ToolResult, WorkspaceContext
@@ -49,8 +49,10 @@ def run_react_agent(
     shell_approval: ShellApproval | None = None,
     event_logger: EventLogger | None = None,
     save_session: bool = True,
+    initial_history: Sequence[AgentEvent] | None = None,
+    session_store: SessionStore | None = None,
 ) -> AgentRun:
-    """执行一个独立 ReAct 会话，直到模型给出 final answer 或达到循环上限。"""
+    """执行一次 ReAct 任务，可接收窗口级历史作为模型输入前缀。"""
 
     provider = provider_factory(config.provider)
     context = WorkspaceContext(
@@ -59,7 +61,7 @@ def run_react_agent(
         git_status="",
         files=[],
     )
-    history: list[AgentEvent] = []
+    history: list[AgentEvent] = list(initial_history or [])
     _append(history, AgentEvent("task", prompt), event_logger)
 
     iterations = 0
@@ -127,7 +129,8 @@ def run_react_agent(
         iterations=iterations,
     )
     if save_session:
-        session_path = SessionStore(config.session_dir).save(run)
+        store = session_store or SessionStore(config.session_dir)
+        session_path = store.save(run)
         run = replace(run, session_path=session_path)
     return run
 

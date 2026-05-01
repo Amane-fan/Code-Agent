@@ -75,6 +75,58 @@ class CliTests(unittest.TestCase):
             self.assertIn("<summary>完成。</summary>", stdout.getvalue())
             self.assertIn("<final_answer>default provider response</final_answer>", stdout.getvalue())
 
+    def test_interactive_reuses_memory_until_clear_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = FakeProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
+                ]
+            )
+
+            with (
+                patch("builtins.input", side_effect=["first task", "second task", "/clear", "third task", "/quit"]),
+                patch("code_agent.agent.make_provider", return_value=provider),
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()),
+            ):
+                exit_code = main(["--workspace", str(root), "--no-session"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("<final_answer>first answer</final_answer>", provider.prompts[1])
+            self.assertNotIn("first task", provider.prompts[2])
+            self.assertNotIn("second task", provider.prompts[2])
+
+    def test_interactive_compact_and_memory_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = FakeProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
+                    "<summary>压缩完成。</summary>\n<final_answer>remembered first</final_answer>",
+                ]
+            )
+            stdout = StringIO()
+
+            with (
+                patch(
+                    "builtins.input",
+                    side_effect=["first task", "second task", "third task", "/compact", "/memory", "/quit"],
+                ),
+                patch("code_agent.agent.make_provider", return_value=provider),
+                redirect_stdout(stdout),
+                redirect_stderr(StringIO()),
+            ):
+                exit_code = main(["--workspace", str(root), "--no-session"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Compacted memory", stdout.getvalue())
+            self.assertIn("remembered first", stdout.getvalue())
+
     def test_interactive_shell_command_can_be_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

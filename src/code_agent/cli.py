@@ -11,6 +11,9 @@ from code_agent.terminal import enable_line_editing, preserve_stdin_terminal
 
 
 EXIT_COMMANDS = {"/exit", "/quit"}
+COMPACT_COMMAND = "/compact"
+CLEAR_COMMAND = "/clear"
+MEMORY_COMMAND = "/memory"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -65,6 +68,22 @@ def _interactive(args: argparse.Namespace) -> int:
             continue
         if prompt in EXIT_COMMANDS:
             return 0
+        if prompt == COMPACT_COMMAND:
+            result = agent.compact_memory()
+            if result.compacted:
+                fallback_note = " (fallback)" if result.used_fallback else ""
+                print(f"Compacted memory{fallback_note}:")
+                print(result.summary)
+            else:
+                print("No older conversation to compact.")
+            continue
+        if prompt == MEMORY_COMMAND:
+            print(agent.memory_status())
+            continue
+        if prompt == CLEAR_COMMAND:
+            agent.clear_memory()
+            print("Memory cleared.")
+            continue
 
         run = agent.run(
             prompt,
