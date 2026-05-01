@@ -4,14 +4,14 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from importlib.resources import files
 from typing import Protocol
 
 from code_agent.config import configured_model, configured_value
 from code_agent.models import WorkspaceContext
+from code_agent.prompting import BASE_SYSTEM_INSTRUCTIONS
 
 
-SYSTEM_INSTRUCTIONS = files("code_agent.prompts").joinpath("system.md").read_text(encoding="utf-8")
+SYSTEM_INSTRUCTIONS = BASE_SYSTEM_INSTRUCTIONS
 
 DEFAULT_RESPONSES_API_URL = "https://api.openai.com/v1/responses"
 
@@ -45,6 +45,7 @@ class OpenAIResponsesProvider:
     """通过 OpenAI 兼容的 Responses API 生成 ReAct 下一步输出。"""
 
     name: str = "openai"
+    system_instructions: str = BASE_SYSTEM_INSTRUCTIONS
 
     def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
         selected_model = configured_model() or model
@@ -58,7 +59,7 @@ class OpenAIResponsesProvider:
         # Responses API 使用 instructions 承载系统约束，input 直接承载 runner 渲染出的任务历史。
         payload = {
             "model": selected_model,
-            "instructions": SYSTEM_INSTRUCTIONS,
+            "instructions": self.system_instructions,
             "input": [
                 {
                     "role": "user",
@@ -92,14 +93,16 @@ class OpenAIResponsesProvider:
         return _extract_response_text(json.loads(body))
 
 
-def make_provider(name: str) -> ModelProvider:
+def make_provider(name: str, *, system_instructions: str | None = None) -> ModelProvider:
     """根据 CLI 配置创建模型提供方实例。"""
 
     normalized = name.lower().strip()
     if normalized == "offline":
         return OfflineProvider()
     if normalized == "openai":
-        return OpenAIResponsesProvider()
+        return OpenAIResponsesProvider(
+            system_instructions=system_instructions or BASE_SYSTEM_INSTRUCTIONS
+        )
     raise ValueError(f"unknown provider: {name}")
 
 

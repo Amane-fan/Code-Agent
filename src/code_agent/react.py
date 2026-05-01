@@ -9,7 +9,8 @@ from code_agent.config import AgentConfig
 from code_agent.models import AgentEvent, AgentRun, ToolResult, WorkspaceContext
 from code_agent.providers import make_provider
 from code_agent.session import SessionStore
-from code_agent.tools import FileTools, ShellTool
+from code_agent.skills import SkillRegistry
+from code_agent.tools import ToolRegistry, create_workspace_tool_registry
 
 
 ProviderFactory = Callable[[str], "ModelProvider"]
@@ -51,6 +52,8 @@ def run_react_agent(
     save_session: bool = True,
     initial_history: Sequence[AgentEvent] | None = None,
     session_store: SessionStore | None = None,
+    skill_registry: SkillRegistry | None = None,
+    tool_registry: ToolRegistry | None = None,
 ) -> AgentRun:
     """执行一次 ReAct 任务，可接收窗口级历史作为模型输入前缀。"""
 
@@ -66,8 +69,11 @@ def run_react_agent(
 
     iterations = 0
     final_answer: str | None = None
-    file_tools = FileTools(config.workspace_root)
-    shell_tool = ShellTool(config.workspace_root)
+    tools = tool_registry or create_workspace_tool_registry(
+        config.workspace_root,
+        skill_registry=skill_registry,
+        shell_approval=shell_approval,
+    )
 
     for iteration in range(1, config.max_iterations + 1):
         iterations = iteration
@@ -102,9 +108,7 @@ def run_react_agent(
             )
             result = _execute_action(
                 action,
-                file_tools=file_tools,
-                shell_tool=shell_tool,
-                shell_approval=shell_approval,
+                tool_registry=tools,
             )
             _append(history, _observation_event(result), event_logger)
             continue
@@ -180,39 +184,9 @@ def _parse_action(raw: str) -> tuple[ActionCall | None, ToolResult]:
 def _execute_action(
     action: ActionCall,
     *,
-    file_tools: FileTools,
-    shell_tool: ShellTool,
-    shell_approval: ShellApproval | None,
+    tool_registry: ToolRegistry,
 ) -> ToolResult:
-    try:
-        if action.tool == "read_file":
-            return file_tools.read(_required_str(action, "path"))
-        if action.tool == "write_file":
-            return file_tools.write(_required_str(action, "path"), _required_str(action, "content"))
-        if action.tool == "edit_file":
-            return file_tools.edit(
-                _required_str(action, "path"),
-                _required_str(action, "old_text"),
-                _required_str(action, "new_text"),
-            )
-        if action.tool == "list_files":
-            return file_tools.list()
-        if action.tool == "grep_search":
-            return file_tools.search(_required_str(action, "pattern"))
-        if action.tool == "run_shell":
-            command = _required_str(action, "command")
-            approved = shell_approval(command) if shell_approval is not None else False
-            return shell_tool.run(command, approved=approved)
-    except ValueError as exc:
-        return ToolResult(action.tool, False, error=str(exc), metadata={"args": action.args})
-    return ToolResult(action.tool, False, error=f"unknown tool: {action.tool}")
-
-
-def _required_str(action: ActionCall, name: str) -> str:
-    value = action.args.get(name)
-    if not isinstance(value, str):
-        raise ValueError(f"{action.tool}.{name} must be a string")
-    return value
+    return tool_registry.execute(action.tool, action.args)
 
 
 def _observation_event(result: ToolResult) -> AgentEvent:

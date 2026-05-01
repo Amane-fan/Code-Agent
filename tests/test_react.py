@@ -52,6 +52,38 @@ class ReactLoopTests(unittest.TestCase):
             self.assertNotIn("Tool schemas", provider.prompts[0])
             self.assertNotIn("Workspace:", provider.prompts[0])
 
+    def test_load_skill_observation_is_appended_to_next_model_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            skills_root = Path(tmp) / "skills"
+            skill_dir = skills_root / "python"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: python\n"
+                "description: Use when editing Python code.\n"
+                "---\n\n"
+                "Full Python skill body.\n",
+                encoding="utf-8",
+            )
+            provider = SequencedProvider(
+                [
+                    '<summary>需要加载技能。</summary>\n'
+                    '<action>{"tool":"load_skill","args":{"name":"python"}}</action>',
+                    "<summary>已经拿到技能。</summary>\n<final_answer>skill loaded</final_answer>",
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="offline", skills_path=skills_root),
+                provider_factory=lambda name: provider,
+            ).run("使用 python skill", save_session=False)
+
+            self.assertEqual(run.final_answer, "skill loaded")
+            self.assertIn("Full Python skill body.", provider.prompts[1])
+            self.assertIn('"name": "load_skill"', provider.prompts[1])
+
     def test_same_agent_remembers_previous_turns_but_new_agent_starts_clean(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

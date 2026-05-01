@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from code_agent.cli import main
 from code_agent.models import WorkspaceContext
@@ -69,7 +69,7 @@ class CliTests(unittest.TestCase):
                 exit_code = main(["--workspace", str(root), "--no-session"])
 
             self.assertEqual(exit_code, 0)
-            make_provider.assert_called_once_with("openai")
+            make_provider.assert_called_once_with("openai", system_instructions=ANY)
             self.assertIn("default provider response", stdout.getvalue())
             self.assertIn("<task>总结项目</task>", stdout.getvalue())
             self.assertIn("<summary>完成。</summary>", stdout.getvalue())

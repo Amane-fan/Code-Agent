@@ -66,7 +66,7 @@ class ProviderTests(unittest.TestCase):
                 ),
                 patch("urllib.request.urlopen", side_effect=fake_urlopen),
             ):
-                response = OpenAIResponsesProvider().complete(
+                response = OpenAIResponsesProvider(system_instructions="dynamic instructions").complete(
                     "task",
                     context,
                     model="model-from-argument",
@@ -79,6 +79,7 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(captured["url"], "https://dashscope.example.test/v1/responses")
             self.assertEqual(captured["authorization"], "Bearer file-key")
             self.assertEqual(captured["timeout"], 120)
+            self.assertEqual(payload["instructions"], "dynamic instructions")
             content = payload["input"][0]["content"][0]
             self.assertEqual(content["type"], "input_text")
             self.assertEqual(content["text"], "task")

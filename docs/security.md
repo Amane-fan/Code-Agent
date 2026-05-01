@@ -8,7 +8,8 @@
 - 疑似密钥的值会在工具输出展示或存储前被脱敏。
 - `run_shell` 每次执行前都必须由用户在 CLI 中确认。
 - 所有文件工具和 shell 工具都以 `--workspace` 指定目录为边界。
-- 模型配置和系统 prompt 来自 Code-Agent 项目自身，不读取目标 workspace 的 `.env` 或 prompt 文件。
+- 模型配置、基础系统 prompt、工具注册表和 skills 来自 Code-Agent 项目自身，不读取目标 workspace 的 `.env`、prompt 文件或 `SKILL.md`。
+- 启动上下文只包含 skill 元数据；完整 skill 正文必须通过 `load_skill` 工具 observation 才会进入后续模型输入。
 
 ## 使用者责任
 
@@ -22,3 +23,4 @@
 - 即使用户确认，也对明确破坏性的 shell 命令加入拒绝列表。
 - 增加更细粒度的写入策略，例如只允许修改用户批准的子目录。
 - 对写入内容增加密钥检测，避免把新密钥写入文件。
+- 为项目级 skills 设计独立信任策略；当前默认不从目标 workspace 加载 skills。

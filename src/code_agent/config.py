@@ -56,6 +56,7 @@ class AgentConfig:
     max_iterations: int = 20
     session_dir_name: str = ".code-agent"
     session_root: Path | None = None
+    skills_path: Path | None = None
 
     def __post_init__(self) -> None:
         # 模型调用配置只来自 Code-Agent 自身配置，目标 workspace 的 .env 不参与模型配置。
@@ -79,3 +80,9 @@ class AgentConfig:
         if self.session_root is not None:
             return self.session_root.expanduser().resolve()
         return CODE_AGENT_PROJECT_ROOT / self.session_dir_name
+
+    @property
+    def skills_root(self) -> Path:
+        if self.skills_path is not None:
+            return self.skills_path.expanduser().resolve()
+        return CODE_AGENT_PROJECT_ROOT / "skills"
