@@ -2,7 +2,7 @@
 
 ## 组件
 
-- CLI：解析顶层启动参数，并提供 `code-agent>` 交互式输入循环。
+- CLI：用 Typer 解析顶层启动参数，用 prompt_toolkit 提供 `code-agent>` 输入循环，并用 Rich 渲染事件流。
 - Conversation Session：保存当前终端窗口内的多轮历史、压缩摘要和近期完整轮次。
 - ReAct Runner：为每条用户输入执行一次工具循环，用 `while True` 编排模型调用、工具执行和最终回答。
 - Provider 层：默认用 LangChain `ChatOpenAI` 包装 OpenAI-compatible chat model 调用，并保留确定性的离线模式。
@@ -39,7 +39,7 @@
 
 ## 扩展方向
 
-- 使用 Rich 或 Typer 增强交互式 CLI/TUI。
+- 为交互式 CLI 增加更多快捷键、命令帮助或可选 TUI 视图。
 - 为大型 workspace 加入 Embedding 检索和符号索引。
 - 在现有工具返回协议之上接入 MCP 风格的外部工具。
 - 增加可恢复会话、长期偏好记忆或多 Agent 角色。

@@ -1,58 +1,137 @@
 from __future__ import annotations
 
-import argparse
-import sys
+import json
 from pathlib import Path
+from typing import Annotated
+
+import click
+import typer
+from rich.console import Console, RenderableType
+from rich.json import JSON
+from rich.panel import Panel
+from rich.text import Text
+from typer.main import get_command
 
 from code_agent.agent import CodingAgent
 from code_agent.config import DEFAULT_PROVIDER, AgentConfig
 from code_agent.models import AgentEvent
-from code_agent.terminal import enable_line_editing, preserve_stdin_terminal
+from code_agent.terminal import read_prompt
 
 
 EXIT_COMMANDS = {"/exit", "/quit"}
 COMPACT_COMMAND = "/compact"
 CLEAR_COMMAND = "/clear"
 MEMORY_COMMAND = "/memory"
+SLASH_COMMANDS = sorted([*EXIT_COMMANDS, COMPACT_COMMAND, CLEAR_COMMAND, MEMORY_COMMAND])
+
+app = typer.Typer(
+    add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    help="Interactive AI coding agent for a single workspace.",
+)
+
+
+class TerminalRenderer:
+    """Render agent events and CLI status messages with Rich."""
+
+    def __init__(self, console: Console) -> None:
+        self.console = console
+
+    def event(self, event: AgentEvent) -> None:
+        title = {
+            "memory": "Memory",
+            "task": "Task",
+            "summary": "Summary",
+            "action": "Action",
+            "observation": "Observation",
+            "final_answer": "Final Answer",
+        }[event.kind]
+        border_style = {
+            "memory": "cyan",
+            "task": "blue",
+            "summary": "green",
+            "action": "yellow",
+            "observation": "magenta",
+            "final_answer": "bold green",
+        }[event.kind]
+        renderable: RenderableType
+        if event.kind in {"action", "observation"}:
+            renderable = self._json_or_text(event.content)
+        else:
+            renderable = Text(event.content)
+        self.console.print(Panel(renderable, title=title, border_style=border_style))
+
+    def info(self, message: str, *, title: str = "Info") -> None:
+        self.console.print(Panel(Text(message), title=title, border_style="cyan"))
+
+    def success(self, message: str, *, title: str = "Done") -> None:
+        self.console.print(Panel(Text(message), title=title, border_style="green"))
+
+    def error(self, message: str, *, title: str = "Error") -> None:
+        self.console.print(Panel(Text(message), title=title, border_style="red"))
+
+    def _json_or_text(self, value: str) -> RenderableType:
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return Text(value)
+        return JSON.from_data(parsed)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
+    command = get_command(app)
     try:
-        args = parser.parse_args(argv)
-    except SystemExit as exc:
-        return int(exc.code) if isinstance(exc.code, int) else 2
-
-    try:
-        return _interactive(args)
+        result = command.main(args=argv, prog_name="code-agent", standalone_mode=False)
+        return int(result or 0)
+    except click.ClickException as exc:
+        exc.show()
+        return exc.exit_code
+    except click.exceptions.Exit as exc:
+        return int(exc.exit_code)
     except KeyboardInterrupt:
-        print("\nInterrupted", file=sys.stderr)
+        TerminalRenderer(Console(stderr=True)).error("Interrupted")
         return 130
     except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        TerminalRenderer(Console(stderr=True)).error(str(exc))
         return 1
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="code-agent",
-        description="Interactive AI coding agent for a single workspace.",
-    )
-    parser.add_argument(
-        "--workspace",
-        required=True,
-        help="Workspace path the agent may inspect and modify.",
-    )
-    parser.add_argument("--provider", default=DEFAULT_PROVIDER, choices=["offline", "openai"])
-    parser.add_argument("--no-session", action="store_true", help="Do not write session logs.")
-    return parser
+@app.command()
+def _main_command(
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            "--workspace",
+            help="Workspace path the agent may inspect and modify.",
+        ),
+    ],
+    provider: Annotated[
+        str,
+        typer.Option(
+            "--provider",
+            help="Model provider.",
+        ),
+    ] = DEFAULT_PROVIDER,
+    no_session: Annotated[
+        bool,
+        typer.Option(
+            "--no-session",
+            help="Do not write session logs.",
+        ),
+    ] = False,
+) -> int:
+    """Interactive AI coding agent for a single workspace."""
+
+    if provider not in {"offline", "openai"}:
+        raise typer.BadParameter("provider must be one of: offline, openai")
+    return _interactive(workspace=workspace, provider=provider, no_session=no_session)
 
 
-def _interactive(args: argparse.Namespace) -> int:
-    enable_line_editing()
+def _interactive(*, workspace: Path, provider: str, no_session: bool) -> int:
+    renderer = TerminalRenderer(Console())
     config = AgentConfig(
-        workspace_path=Path(args.workspace),
-        provider=args.provider,
+        workspace_path=workspace,
+        provider=provider,
     )
     agent = CodingAgent(config)
 
@@ -60,7 +139,7 @@ def _interactive(args: argparse.Namespace) -> int:
         try:
             prompt = _read_input("code-agent> ")
         except EOFError:
-            print()
+            renderer.info("EOF received. Exiting.", title="Exit")
             return 0
 
         prompt = prompt.strip()
@@ -72,41 +151,40 @@ def _interactive(args: argparse.Namespace) -> int:
             result = agent.compact_memory()
             if result.compacted:
                 fallback_note = " (fallback)" if result.used_fallback else ""
-                print(f"Compacted memory{fallback_note}:")
-                print(result.summary)
+                renderer.info(result.summary, title=f"Compacted memory{fallback_note}")
             else:
-                print("No older conversation to compact.")
+                renderer.info("No older conversation to compact.", title="Memory")
             continue
         if prompt == MEMORY_COMMAND:
-            print(agent.memory_status())
+            renderer.info(agent.memory_status(), title="Memory")
             continue
         if prompt == CLEAR_COMMAND:
             agent.clear_memory()
-            print("Memory cleared.")
+            renderer.success("Memory cleared.", title="Memory")
             continue
 
         run = agent.run(
             prompt,
             shell_approval=_confirm_shell_command,
-            event_logger=_print_event,
-            save_session=not args.no_session,
+            event_logger=renderer.event,
+            save_session=not no_session,
         )
         if run.session_path:
-            print(f"\nSession: {run.session_path}")
+            renderer.info(str(run.session_path), title="Session")
 
 
 def _print_event(event: AgentEvent) -> None:
-    print(event.tag)
+    TerminalRenderer(Console()).event(event)
 
 
 def _confirm_shell_command(command: str) -> bool:
-    answer = _read_input(f"Run shell command? {command}\nApprove? [y/N] ").strip().lower()
+    TerminalRenderer(Console()).info(command, title="Shell Command")
+    answer = _read_input("Approve? [y/N] ").strip().lower()
     return answer in {"y", "yes"}
 
 
 def _read_input(prompt: str) -> str:
-    with preserve_stdin_terminal():
-        return input(prompt)
+    return read_prompt(prompt, commands=SLASH_COMMANDS)
 
 
 if __name__ == "__main__":

@@ -46,7 +46,7 @@ class CliTests(unittest.TestCase):
     def test_exit_command_leaves_interactive_loop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                patch("builtins.input", side_effect=["/exit"]),
+                patch("code_agent.cli._read_input", side_effect=["/exit"]),
                 redirect_stdout(StringIO()),
                 redirect_stderr(StringIO()),
             ):
@@ -61,7 +61,7 @@ class CliTests(unittest.TestCase):
             stdout = StringIO()
             provider = FakeProvider()
             with (
-                patch("builtins.input", side_effect=["总结项目", "/quit"]),
+                patch("code_agent.cli._read_input", side_effect=["总结项目", "/quit"]),
                 patch("code_agent.agent.make_provider", return_value=provider) as make_provider,
                 redirect_stdout(stdout),
                 redirect_stderr(StringIO()),
@@ -71,9 +71,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             make_provider.assert_called_once_with("openai", system_instructions=ANY)
             self.assertIn("default provider response", stdout.getvalue())
-            self.assertIn("<task>总结项目</task>", stdout.getvalue())
-            self.assertIn("<summary>完成。</summary>", stdout.getvalue())
-            self.assertIn("<final_answer>default provider response</final_answer>", stdout.getvalue())
+            self.assertIn("Task", stdout.getvalue())
+            self.assertIn("总结项目", stdout.getvalue())
+            self.assertIn("Summary", stdout.getvalue())
+            self.assertIn("Final Answer", stdout.getvalue())
 
     def test_interactive_reuses_memory_until_clear_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -87,7 +88,10 @@ class CliTests(unittest.TestCase):
             )
 
             with (
-                patch("builtins.input", side_effect=["first task", "second task", "/clear", "third task", "/quit"]),
+                patch(
+                    "code_agent.cli._read_input",
+                    side_effect=["first task", "second task", "/clear", "third task", "/quit"],
+                ),
                 patch("code_agent.agent.make_provider", return_value=provider),
                 redirect_stdout(StringIO()),
                 redirect_stderr(StringIO()),
@@ -114,7 +118,7 @@ class CliTests(unittest.TestCase):
 
             with (
                 patch(
-                    "builtins.input",
+                    "code_agent.cli._read_input",
                     side_effect=["first task", "second task", "third task", "/compact", "/memory", "/quit"],
                 ),
                 patch("code_agent.agent.make_provider", return_value=provider),
@@ -140,7 +144,7 @@ class CliTests(unittest.TestCase):
 
             stdout = StringIO()
             with (
-                patch("builtins.input", side_effect=["运行命令", "n", "/exit"]),
+                patch("code_agent.cli._read_input", side_effect=["运行命令", "n", "/exit"]),
                 patch("code_agent.agent.make_provider", return_value=provider),
                 redirect_stdout(stdout),
                 redirect_stderr(StringIO()),
@@ -149,9 +153,10 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertFalse((root / "out.txt").exists())
-            self.assertIn("<action>", stdout.getvalue())
+            self.assertIn("Action", stdout.getvalue())
             self.assertIn("command requires user approval", stdout.getvalue())
-            self.assertIn("<final_answer>not run</final_answer>", stdout.getvalue())
+            self.assertIn("Final Answer", stdout.getvalue())
+            self.assertIn("not run", stdout.getvalue())
 
     def test_interactive_shell_command_can_be_approved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -166,7 +171,7 @@ class CliTests(unittest.TestCase):
 
             stdout = StringIO()
             with (
-                patch("builtins.input", side_effect=["运行命令", "y", "/exit"]),
+                patch("code_agent.cli._read_input", side_effect=["运行命令", "y", "/exit"]),
                 patch("code_agent.agent.make_provider", return_value=provider),
                 redirect_stdout(stdout),
                 redirect_stderr(StringIO()),
@@ -175,7 +180,8 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual((root / "out.txt").read_text(encoding="utf-8"), "hello")
-            self.assertIn("<final_answer>ran</final_answer>", stdout.getvalue())
+            self.assertIn("Final Answer", stdout.getvalue())
+            self.assertIn("ran", stdout.getvalue())
 
 
 if __name__ == "__main__":
