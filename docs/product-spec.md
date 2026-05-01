@@ -23,7 +23,7 @@ workspace。
 - CLI 可以通过 `uv sync` 安装依赖后稳定运行。
 - 未指定 `--workspace` 时返回用法错误。
 - 旧入口 `ask`、`context`、`tool` 不再是有效命令。
-- Agent 工作流不依赖 LangGraph，而是由普通 ReAct 循环编排。
+- Agent 工作流使用 LangGraph `StateGraph` 编排，同时保留现有 ReAct 标签协议。
 - 每轮工具 observation 都会加入历史，并参与下一轮模型调用。
 - 同一终端窗口内的下一条任务会收到上一条任务的历史或压缩后的 `<memory>`。
 - 上下文压缩会保留最近轮次的完整事件，并把更旧轮次折叠为摘要。

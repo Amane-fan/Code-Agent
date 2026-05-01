@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Literal, Protocol, Sequence, TypedDict, cast
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from code_agent.config import AgentConfig
 from code_agent.models import AgentEvent, AgentRun, ToolResult, WorkspaceContext
@@ -42,6 +45,19 @@ class ActionCall:
     raw: str
 
 
+class AgentGraphState(TypedDict):
+    history: list[AgentEvent]
+    context: WorkspaceContext
+    provider: ModelProvider
+    model: str
+    tool_registry: ToolRegistry
+    event_logger: EventLogger | None
+    max_iterations: int
+    iterations: int
+    final_answer: str | None
+    pending_action: ActionCall | None
+
+
 def run_react_agent(
     config: AgentConfig,
     prompt: str,
@@ -75,53 +91,27 @@ def run_react_agent(
         shell_approval=shell_approval,
     )
 
-    for iteration in range(1, config.max_iterations + 1):
-        iterations = iteration
-        response_text = provider.complete(
-            _render_prompt(history),
-            context,
-            model=config.model,
-        )
-        parsed = _parse_response(response_text)
-        if parsed.summary:
-            _append(history, AgentEvent("summary", parsed.summary), event_logger)
-
-        if parsed.action_text is not None:
-            action, parse_error = _parse_action(parsed.action_text)
-            if action is None:
-                _append(
-                    history,
-                    AgentEvent("action", parsed.action_text),
-                    event_logger,
-                )
-                _append(
-                    history,
-                    _observation_event(parse_error),
-                    event_logger,
-                )
-                continue
-
-            _append(
-                history,
-                AgentEvent("action", action.raw, tool=action.tool, args=action.args),
-                event_logger,
-            )
-            result = _execute_action(
-                action,
-                tool_registry=tools,
-            )
-            _append(history, _observation_event(result), event_logger)
-            continue
-
-        final_answer = parsed.final_answer or parsed.fallback_answer or ""
-        _append(history, AgentEvent("final_answer", final_answer), event_logger)
-        break
-
-    if final_answer is None:
-        final_answer = (
-            f"Stopped after maximum iteration limit ({config.max_iterations}) without a final answer."
-        )
-        _append(history, AgentEvent("final_answer", final_answer), event_logger)
+    graph = _build_react_graph()
+    final_state = cast(
+        AgentGraphState,
+        graph.invoke(
+            {
+                "history": history,
+                "context": context,
+                "provider": provider,
+                "model": config.model,
+                "tool_registry": tools,
+                "event_logger": event_logger,
+                "max_iterations": config.max_iterations,
+                "iterations": iterations,
+                "final_answer": final_answer,
+                "pending_action": None,
+            }
+        ),
+    )
+    history = final_state["history"]
+    iterations = final_state["iterations"]
+    final_answer = final_state["final_answer"] or ""
 
     run = AgentRun(
         prompt=prompt,
@@ -139,6 +129,151 @@ def run_react_agent(
     return run
 
 
+def _build_react_graph() -> CompiledStateGraph[
+    AgentGraphState, None, AgentGraphState, AgentGraphState
+]:
+    graph = StateGraph(AgentGraphState)
+    graph.add_node("call_model", _call_model_node)
+    graph.add_node("execute_tool", _execute_tool_node)
+    graph.add_node("limit", _limit_node)
+    graph.add_conditional_edges(
+        START,
+        _route_from_start,
+        {
+            "call_model": "call_model",
+            "limit": "limit",
+        },
+    )
+    graph.add_conditional_edges(
+        "call_model",
+        _route_after_call_model,
+        {
+            "execute_tool": "execute_tool",
+            "call_model": "call_model",
+            "limit": "limit",
+            "end": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "execute_tool",
+        _route_after_execute_tool,
+        {
+            "call_model": "call_model",
+            "limit": "limit",
+        },
+    )
+    graph.add_edge("limit", END)
+    return graph.compile()
+
+
+def _call_model_node(state: AgentGraphState) -> dict[str, Any]:
+    history = list(state["history"])
+    iteration = state["iterations"] + 1
+    response_text = state["provider"].complete(
+        _render_prompt(history),
+        state["context"],
+        model=state["model"],
+    )
+    parsed = _parse_response(response_text)
+    if parsed.summary:
+        _append(history, AgentEvent("summary", parsed.summary), state["event_logger"])
+
+    if parsed.action_text is not None:
+        action, parse_error = _parse_action(parsed.action_text)
+        if action is None:
+            _append(
+                history,
+                AgentEvent("action", parsed.action_text),
+                state["event_logger"],
+            )
+            _append(
+                history,
+                _observation_event(parse_error),
+                state["event_logger"],
+            )
+            return {
+                "history": history,
+                "iterations": iteration,
+                "final_answer": None,
+                "pending_action": None,
+            }
+
+        _append(
+            history,
+            AgentEvent("action", action.raw, tool=action.tool, args=action.args),
+            state["event_logger"],
+        )
+        return {
+            "history": history,
+            "iterations": iteration,
+            "final_answer": None,
+            "pending_action": action,
+        }
+
+    final_answer = parsed.final_answer or parsed.fallback_answer or ""
+    _append(history, AgentEvent("final_answer", final_answer), state["event_logger"])
+    return {
+        "history": history,
+        "iterations": iteration,
+        "final_answer": final_answer,
+        "pending_action": None,
+    }
+
+
+def _execute_tool_node(state: AgentGraphState) -> dict[str, Any]:
+    action = state["pending_action"]
+    if action is None:
+        return {"pending_action": None}
+
+    history = list(state["history"])
+    result = _execute_action(
+        action,
+        tool_registry=state["tool_registry"],
+    )
+    _append(history, _observation_event(result), state["event_logger"])
+    return {
+        "history": history,
+        "pending_action": None,
+    }
+
+
+def _limit_node(state: AgentGraphState) -> dict[str, Any]:
+    history = list(state["history"])
+    final_answer = (
+        f"Stopped after maximum iteration limit ({state['max_iterations']}) without a final answer."
+    )
+    _append(history, AgentEvent("final_answer", final_answer), state["event_logger"])
+    return {
+        "history": history,
+        "final_answer": final_answer,
+        "pending_action": None,
+    }
+
+
+def _route_from_start(state: AgentGraphState) -> Literal["call_model", "limit"]:
+    if state["iterations"] >= state["max_iterations"]:
+        return "limit"
+    return "call_model"
+
+
+def _route_after_call_model(
+    state: AgentGraphState,
+) -> Literal["execute_tool", "call_model", "limit", "end"]:
+    if state["final_answer"] is not None:
+        return "end"
+    if state["pending_action"] is not None:
+        return "execute_tool"
+    if state["iterations"] >= state["max_iterations"]:
+        return "limit"
+    return "call_model"
+
+
+def _route_after_execute_tool(state: AgentGraphState) -> Literal["call_model", "limit"]:
+    if state["iterations"] >= state["max_iterations"]:
+        return "limit"
+    return "call_model"
+
+
 def _append(history: list[AgentEvent], event: AgentEvent, logger: EventLogger | None) -> None:
     history.append(event)
     if logger is not None:
@@ -152,13 +287,23 @@ def _render_prompt(history: list[AgentEvent]) -> str:
 def _parse_response(text: str) -> ParsedResponse:
     summary = _extract_tag(text, "summary")
     action_text = _extract_tag(text, "action")
-    final_answer = _extract_tag(text, "final_answer")
+    final_answer = _extract_tag(text, "final_answer") or _extract_open_tag_to_end(
+        text,
+        "final_answer",
+    )
     fallback_answer = text.strip() if action_text is None and final_answer is None else None
     return ParsedResponse(summary, action_text, final_answer, fallback_answer)
 
 
 def _extract_tag(text: str, tag: str) -> str | None:
     match = re.search(rf"<{tag}>(.*?)</{tag}>", text, flags=re.DOTALL)
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+def _extract_open_tag_to_end(text: str, tag: str) -> str | None:
+    match = re.search(rf"<{tag}>(.*)\Z", text, flags=re.DOTALL)
     if match is None:
         return None
     return match.group(1).strip()

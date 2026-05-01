@@ -12,21 +12,21 @@ from code_agent.tools import create_workspace_tool_registry
 class PromptTests(unittest.TestCase):
     def test_system_prompt_keeps_english_protocol_examples(self) -> None:
         self.assertIn("You are a cautious terminal programming agent.", BASE_SYSTEM_INSTRUCTIONS)
-        self.assertIn(
-            "<summary>Read README.md to inspect the project overview.</summary>",
+        self.assertRegex(
             BASE_SYSTEM_INSTRUCTIONS,
+            r"<summary>\s*Read README\.md to inspect the project overview\.\s*</summary>",
         )
-        self.assertIn(
-            '<action>{"tool":"read_file","args":{"path":"README.md"}}</action>',
+        self.assertRegex(
             BASE_SYSTEM_INSTRUCTIONS,
+            r"<action>\s*\{\"tool\":\"read_file\",\"args\":\{\"path\":\"README\.md\"\}\}\s*</action>",
         )
-        self.assertIn(
-            "<summary>The requested change has been completed and verified.</summary>",
+        self.assertRegex(
             BASE_SYSTEM_INSTRUCTIONS,
+            r"<summary>\s*The requested change has been completed and verified\.\s*</summary>",
         )
-        self.assertIn(
-            "<final_answer>Updated the tool documentation and ran the relevant tests.</final_answer>",
+        self.assertRegex(
             BASE_SYSTEM_INSTRUCTIONS,
+            r"<final_answer>\s*Updated the tool documentation and ran the relevant tests\.\s*</final_answer>",
         )
         old_summary_tag = "<" + "th" + "ink" + ">"
         self.assertNotIn(old_summary_tag, BASE_SYSTEM_INSTRUCTIONS)

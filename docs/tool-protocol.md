@@ -26,6 +26,7 @@
 
 ## 工具返回结构
 
+每个工具 observation 都会作为 `<observation>` 事件写回 LangGraph state 中的历史，并参与下一轮模型输入。
 每个工具 observation 都包含：
 
 - `name`：稳定的工具名称。

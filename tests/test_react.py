@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from langgraph.graph import StateGraph
+
 from code_agent.agent import CodingAgent
 from code_agent.config import AgentConfig
 from code_agent.models import WorkspaceContext
@@ -25,6 +27,16 @@ class SequencedProvider:
 
 
 class ReactLoopTests(unittest.TestCase):
+    def test_langgraph_dependency_is_available(self) -> None:
+        self.assertIsNotNone(StateGraph)
+
+    def test_react_runner_builds_langgraph_workflow(self) -> None:
+        from code_agent.react import _build_react_graph
+
+        graph = _build_react_graph()
+
+        self.assertTrue(callable(getattr(graph, "invoke", None)))
+
     def test_tool_observation_is_appended_to_next_model_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -51,6 +63,25 @@ class ReactLoopTests(unittest.TestCase):
             self.assertNotIn("Only use these tools", provider.prompts[0])
             self.assertNotIn("Tool schemas", provider.prompts[0])
             self.assertNotIn("Workspace:", provider.prompts[0])
+
+    def test_unclosed_final_answer_tag_does_not_render_protocol_tags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = SequencedProvider(
+                [
+                    "<summary>直接回答用户问题。</summary>\n\n"
+                    "<final_answer>\n我是 Code Agent。"
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="offline"),
+                provider_factory=lambda name: provider,
+            ).run("你是什么模型", save_session=False)
+
+            self.assertEqual(run.final_answer, "我是 Code Agent。")
+            self.assertEqual(run.history[-1].kind, "final_answer")
+            self.assertEqual(run.history[-1].content, "我是 Code Agent。")
 
     def test_load_skill_observation_is_appended_to_next_model_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -263,6 +294,28 @@ class ReactLoopTests(unittest.TestCase):
             ).run("loop", save_session=False)
 
             self.assertEqual(run.iterations, 20)
+            self.assertIn("maximum iteration limit", run.final_answer)
+
+    def test_iteration_limit_records_last_observation_before_final_answer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = SequencedProvider(
+                [
+                    '<summary>继续。</summary>\n'
+                    '<action>{"tool":"list_files","args":{}}</action>'
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="offline", max_iterations=1),
+                provider_factory=lambda name: provider,
+            ).run("loop once", save_session=False)
+
+            self.assertEqual(run.iterations, 1)
+            self.assertEqual(
+                [event.kind for event in run.history],
+                ["task", "summary", "action", "observation", "final_answer"],
+            )
             self.assertIn("maximum iteration limit", run.final_answer)
 
     def test_session_log_contains_tagged_history(self) -> None:

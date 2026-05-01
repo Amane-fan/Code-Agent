@@ -2,14 +2,14 @@
 
 Code Agent 是一个面向单一本地 workspace 的终端交互式 AI 编程助手。启动时必须指定目标
 workspace，之后可以在同一个窗口内连续输入任务；这些任务共享当前窗口的会话记忆。每条输入都会开启
-一次 ReAct 工具循环，模型根据需要调用受控工具，工具结果会作为 `<observation>` 加入历史并回传给模型，
-直到模型输出 `<final_answer>`。
+一次由 LangGraph 编排的 ReAct 工具循环，模型根据需要调用受控工具，工具结果会作为 `<observation>`
+加入历史并回传给模型，直到模型输出 `<final_answer>`。
 
 系统启动时会动态生成工具说明，并加载 Code-Agent 自身 `skills/` 目录中的 skill 元数据。启动上下文只包含
 skill 的名称和描述；如果模型需要完整 skill 内容，必须通过 `load_skill` 工具按需加载。
 
-当前 MVP 不使用 LangGraph。核心编排是普通 `while True` 循环，并实时记录 Agent 行为标签：
-`<memory>`、`<task>`、`<summary>`、`<action>`、`<observation>`、`<final_answer>`。
+核心编排使用 LangGraph `StateGraph`，并实时记录 Agent 行为标签：`<memory>`、`<task>`、
+`<summary>`、`<action>`、`<observation>`、`<final_answer>`。
 
 ## 快速开始
 
@@ -88,17 +88,13 @@ CLI 只保留顶层交互式启动参数：
 
 ## ReAct 工具循环
 
-每条用户任务底层执行如下循环：
+每条用户任务底层由 LangGraph 节点执行如下逻辑：
 
 ```text
-while True:
-  call_provider(history)
-  if response has <action>:
-    execute tool
-    append <observation>
-    continue
-  append <final_answer>
-  break
+START -> call_model
+call_model -- action --> execute_tool -> call_model
+call_model -- final_answer --> END
+call_model/execute_tool -- max_iterations reached --> limit -> END
 ```
 
 模型每轮只能选择一个工具调用，工具调用格式为：
