@@ -79,6 +79,11 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(captured["url"], "https://dashscope.example.test/v1/responses")
             self.assertEqual(captured["authorization"], "Bearer file-key")
             self.assertEqual(captured["timeout"], 120)
+            content = payload["input"][0]["content"][0]
+            self.assertEqual(content["type"], "input_text")
+            self.assertEqual(content["text"], "task")
+            self.assertNotIn("User task:", content["text"])
+            self.assertNotIn("Workspace context:", content["text"])
 
     def test_openai_provider_ignores_workspace_env_when_config_is_missing_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

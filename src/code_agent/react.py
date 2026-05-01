@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from code_agent.config import AgentConfig
@@ -29,7 +28,7 @@ class ModelProvider(Protocol):
 
 @dataclass(frozen=True)
 class ParsedResponse:
-    think: str | None
+    summary: str | None
     action_text: str | None
     final_answer: str | None
     fallback_answer: str | None
@@ -71,13 +70,13 @@ def run_react_agent(
     for iteration in range(1, config.max_iterations + 1):
         iterations = iteration
         response_text = provider.complete(
-            _render_prompt(config.workspace_root, history),
+            _render_prompt(history),
             context,
             model=config.model,
         )
         parsed = _parse_response(response_text)
-        if parsed.think:
-            _append(history, AgentEvent("think", parsed.think), event_logger)
+        if parsed.summary:
+            _append(history, AgentEvent("summary", parsed.summary), event_logger)
 
         if parsed.action_text is not None:
             action, parse_error = _parse_action(parsed.action_text)
@@ -139,33 +138,16 @@ def _append(history: list[AgentEvent], event: AgentEvent, logger: EventLogger | 
         logger(event)
 
 
-def _render_prompt(workspace_root: Path, history: list[AgentEvent]) -> str:
-    tool_spec = (
-        "You are running one independent ReAct task.\n"
-        f"Workspace: {workspace_root}\n"
-        "Only use these tools: read_file, write_file, edit_file, list_files, grep_search, run_shell.\n"
-        "If you need a tool, output <think>short public reasoning</think> and exactly one "
-        '<action>{"tool":"tool_name","args":{...}}</action>.\n'
-        "If no tool is needed, output <think>short public reasoning</think> and "
-        "<final_answer>answer</final_answer>.\n"
-        "Tool schemas:\n"
-        '- read_file: {"path": "relative/path"}\n'
-        '- write_file: {"path": "relative/path", "content": "..."}\n'
-        '- edit_file: {"path": "relative/path", "old_text": "...", "new_text": "..."}\n'
-        "- list_files: {}\n"
-        '- grep_search: {"pattern": "text"}\n'
-        '- run_shell: {"command": "shell command"}\n'
-        "History:\n"
-    )
-    return tool_spec + "\n".join(event.tag for event in history)
+def _render_prompt(history: list[AgentEvent]) -> str:
+    return "\n".join(event.tag for event in history)
 
 
 def _parse_response(text: str) -> ParsedResponse:
-    think = _extract_tag(text, "think")
+    summary = _extract_tag(text, "summary")
     action_text = _extract_tag(text, "action")
     final_answer = _extract_tag(text, "final_answer")
     fallback_answer = text.strip() if action_text is None and final_answer is None else None
-    return ParsedResponse(think, action_text, final_answer, fallback_answer)
+    return ParsedResponse(summary, action_text, final_answer, fallback_answer)
 
 
 def _extract_tag(text: str, tag: str) -> str | None:

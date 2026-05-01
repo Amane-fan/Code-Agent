@@ -31,9 +31,9 @@ class ReactLoopTests(unittest.TestCase):
             (root / "README.md").write_text("# Demo\n", encoding="utf-8")
             provider = SequencedProvider(
                 [
-                    '<think>需要读取 README。</think>\n'
+                    '<summary>需要读取 README。</summary>\n'
                     '<action>{"tool":"read_file","args":{"path":"README.md"}}</action>',
-                    "<think>已经拿到文件内容。</think>\n<final_answer>README 是 Demo。</final_answer>",
+                    "<summary>已经拿到文件内容。</summary>\n<final_answer>README 是 Demo。</final_answer>",
                 ]
             )
 
@@ -47,13 +47,16 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(run.iterations, 2)
             self.assertIn("<observation>", provider.prompts[1])
             self.assertIn("# Demo", provider.prompts[1])
-            self.assertEqual([event.kind for event in run.history], ["task", "think", "action", "observation", "think", "final_answer"])
+            self.assertEqual([event.kind for event in run.history], ["task", "summary", "action", "observation", "summary", "final_answer"])
+            self.assertNotIn("Only use these tools", provider.prompts[0])
+            self.assertNotIn("Tool schemas", provider.prompts[0])
+            self.assertNotIn("Workspace:", provider.prompts[0])
 
     def test_each_run_has_independent_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            first_provider = SequencedProvider(["<think>完成。</think>\n<final_answer>first</final_answer>"])
-            second_provider = SequencedProvider(["<think>完成。</think>\n<final_answer>second</final_answer>"])
+            first_provider = SequencedProvider(["<summary>完成。</summary>\n<final_answer>first</final_answer>"])
+            second_provider = SequencedProvider(["<summary>完成。</summary>\n<final_answer>second</final_answer>"])
             config = AgentConfig(workspace_path=root, provider="offline")
 
             CodingAgent(config, provider_factory=lambda name: first_provider).run(
@@ -74,8 +77,8 @@ class ReactLoopTests(unittest.TestCase):
             root = Path(tmp)
             provider = SequencedProvider(
                 [
-                    "<think>格式错误。</think>\n<action>{bad json}</action>",
-                    "<think>修正。</think>\n<final_answer>done</final_answer>",
+                    "<summary>格式错误。</summary>\n<action>{bad json}</action>",
+                    "<summary>修正。</summary>\n<final_answer>done</final_answer>",
                 ]
             )
 
@@ -92,9 +95,9 @@ class ReactLoopTests(unittest.TestCase):
             root = Path(tmp)
             provider = SequencedProvider(
                 [
-                    '<think>运行命令。</think>\n'
+                    '<summary>运行命令。</summary>\n'
                     '<action>{"tool":"run_shell","args":{"command":"printf hello"}}</action>',
-                    "<think>命令完成。</think>\n<final_answer>ok</final_answer>",
+                    "<summary>命令完成。</summary>\n<final_answer>ok</final_answer>",
                 ]
             )
             approvals: list[str] = []
@@ -117,7 +120,7 @@ class ReactLoopTests(unittest.TestCase):
             root = Path(tmp)
             provider = SequencedProvider(
                 [
-                    '<think>继续。</think>\n'
+                    '<summary>继续。</summary>\n'
                     '<action>{"tool":"list_files","args":{}}</action>'
                     for _ in range(20)
                 ]
@@ -136,7 +139,7 @@ class ReactLoopTests(unittest.TestCase):
             root = Path(tmp) / "workspace"
             root.mkdir()
             session_root = Path(tmp) / "sessions"
-            provider = SequencedProvider(["<think>完成。</think>\n<final_answer>answer</final_answer>"])
+            provider = SequencedProvider(["<summary>完成。</summary>\n<final_answer>answer</final_answer>"])
 
             run = CodingAgent(
                 AgentConfig(
@@ -152,6 +155,7 @@ class ReactLoopTests(unittest.TestCase):
             data = json.loads(run.session_path.read_text(encoding="utf-8"))
             self.assertEqual(data["final_answer"], "answer")
             self.assertEqual(data["history"][0]["tag"], "<task>task</task>")
+            self.assertEqual(data["history"][1]["tag"], "<summary>完成。</summary>")
             self.assertEqual(data["history"][-1]["tag"], "<final_answer>answer</final_answer>")
 
 

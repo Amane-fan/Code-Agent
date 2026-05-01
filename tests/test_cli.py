@@ -16,7 +16,7 @@ class FakeProvider:
     name = "fake"
 
     def __init__(self, responses: list[str] | None = None) -> None:
-        self.responses = responses or ["<think>完成。</think>\n<final_answer>default provider response</final_answer>"]
+        self.responses = responses or ["<summary>完成。</summary>\n<final_answer>default provider response</final_answer>"]
         self.prompts: list[str] = []
 
     def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
@@ -72,6 +72,7 @@ class CliTests(unittest.TestCase):
             make_provider.assert_called_once_with("openai")
             self.assertIn("default provider response", stdout.getvalue())
             self.assertIn("<task>总结项目</task>", stdout.getvalue())
+            self.assertIn("<summary>完成。</summary>", stdout.getvalue())
             self.assertIn("<final_answer>default provider response</final_answer>", stdout.getvalue())
 
     def test_interactive_shell_command_can_be_rejected(self) -> None:
@@ -79,9 +80,9 @@ class CliTests(unittest.TestCase):
             root = Path(tmp)
             provider = FakeProvider(
                 [
-                    '<think>需要运行命令。</think>\n'
+                    '<summary>需要运行命令。</summary>\n'
                     '<action>{"tool":"run_shell","args":{"command":"printf hello > out.txt"}}</action>',
-                    "<think>命令被拒绝，停止。</think>\n<final_answer>not run</final_answer>",
+                    "<summary>命令被拒绝，停止。</summary>\n<final_answer>not run</final_answer>",
                 ]
             )
 
@@ -105,9 +106,9 @@ class CliTests(unittest.TestCase):
             root = Path(tmp)
             provider = FakeProvider(
                 [
-                    '<think>需要运行命令。</think>\n'
+                    '<summary>需要运行命令。</summary>\n'
                     '<action>{"tool":"run_shell","args":{"command":"printf hello > out.txt"}}</action>',
-                    "<think>命令完成。</think>\n<final_answer>ran</final_answer>",
+                    "<summary>命令完成。</summary>\n<final_answer>ran</final_answer>",
                 ]
             )
 

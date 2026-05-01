@@ -35,7 +35,7 @@ class OfflineProvider:
 
     def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
         return (
-            "<think>离线模式不会调用远端模型或主动选择工具。</think>\n"
+            "<summary>离线模式不会调用远端模型或主动选择工具。</summary>\n"
             "<final_answer>Offline mode received the task and produced no tool actions.</final_answer>"
         )
 
@@ -55,7 +55,7 @@ class OpenAIResponsesProvider:
                 "or process environment"
             )
 
-        # Responses API 使用 instructions 承载系统约束，input 承载 ReAct 历史和 workspace 边界。
+        # Responses API 使用 instructions 承载系统约束，input 直接承载 runner 渲染出的任务历史。
         payload = {
             "model": selected_model,
             "instructions": SYSTEM_INSTRUCTIONS,
@@ -65,10 +65,7 @@ class OpenAIResponsesProvider:
                     "content": [
                         {
                             "type": "input_text",
-                            "text": (
-                                f"User task:\n{prompt}\n\n"
-                                f"Workspace context:\n{context.render(80_000)}"
-                            ),
+                            "text": prompt,
                         }
                     ],
                 }
