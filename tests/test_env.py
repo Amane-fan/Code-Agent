@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from code_agent.config import AgentConfig
 from code_agent.env import load_env_file
-from code_agent.providers import _responses_api_url
+import code_agent.providers as providers
 
 
 class EnvTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class EnvTests(unittest.TestCase):
             root = Path(tmp) / "workspace"
             root.mkdir()
             config_env = Path(tmp) / "code-agent.env"
-            config_env.write_text("DASHSCOPE_MODEL=qwen3.6-plus\n", encoding="utf-8")
+            config_env.write_text("MODEL=qwen3.6-plus\n", encoding="utf-8")
 
             with patch.dict(os.environ, {"CODE_AGENT_ENV_FILE": str(config_env)}, clear=True):
                 config = AgentConfig(workspace_path=root)
@@ -43,9 +43,9 @@ class EnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
-            (root / ".env").write_text("DASHSCOPE_MODEL=workspace-model\n", encoding="utf-8")
+            (root / ".env").write_text("MODEL=workspace-model\n", encoding="utf-8")
             config_env = Path(tmp) / "code-agent.env"
-            config_env.write_text("DASHSCOPE_MODEL=code-agent-model\n", encoding="utf-8")
+            config_env.write_text("MODEL=code-agent-model\n", encoding="utf-8")
 
             with patch.dict(
                 os.environ,
@@ -70,11 +70,11 @@ class EnvTests(unittest.TestCase):
 
         self.assertEqual(config.provider, "openai")
 
-    def test_responses_url_is_derived_from_base_url(self) -> None:
+    def test_langchain_base_url_is_derived_from_base_url(self) -> None:
         with patch.dict(
             os.environ,
             {
-                "DASHSCOPE_BASE_URL": (
+                "BASE_URL": (
                     "https://dashscope.aliyuncs.com/api/v2/apps/protocols/"
                     "compatible-mode/v1"
                 ),
@@ -83,9 +83,23 @@ class EnvTests(unittest.TestCase):
             clear=True,
         ):
             self.assertEqual(
-                _responses_api_url(),
+                providers._langchain_base_url(),
                 "https://dashscope.aliyuncs.com/api/v2/apps/protocols/"
-                "compatible-mode/v1/responses",
+                "compatible-mode/v1",
+            )
+
+    def test_langchain_base_url_accepts_full_chat_completions_endpoint(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "BASE_URL": "https://compatible.example.test/v1/chat/completions",
+                "CODE_AGENT_ENV_FILE": "/tmp/code-agent-missing-env-for-test",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                providers._langchain_base_url(),
+                "https://compatible.example.test/v1",
             )
 
 

@@ -35,18 +35,21 @@ code-agent>
 
 ## 大模型配置
 
-默认使用 `openai` provider。模型配置只从 Code-Agent 项目自身的 `.env` 或当前进程环境变量读取，
-不会读取目标 workspace 的 `.env`，避免目标项目影响 Agent 系统行为。
+默认使用 `openai` provider，通过 LangChain `ChatOpenAI` 调用 OpenAI-compatible chat model。
+模型配置只从 Code-Agent 项目自身的 `.env` 或当前进程环境变量读取，不会读取目标 workspace 的 `.env`，
+避免目标项目影响 Agent 系统行为。
 
-`.env.example` 已按阿里百炼 OpenAI 兼容接口配置：
+`.env.example` 已按 OpenAI-compatible chat model 配置。通常只需要提供：
 
 ```bash
-DASHSCOPE_API_KEY=替换为你的阿里百炼API_KEY
-DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1
-DASHSCOPE_MODEL=qwen3.6-plus
+API_KEY=替换为你的 API Key
+BASE_URL=https://api.deepseek.com
+MODEL=deepseek-v4-flash
 ```
 
-也可以使用 OpenAI 原生变量：
+`BASE_URL` 可填写 base URL；如果你已经填写完整 `/chat/completions` endpoint，会自动剥离该后缀后传给
+LangChain `ChatOpenAI`。
+也可以继续使用 OpenAI 原生变量：
 
 ```bash
 OPENAI_API_KEY=替换为你的 OpenAI API Key

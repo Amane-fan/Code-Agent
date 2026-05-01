@@ -35,7 +35,7 @@ def configured_value(*names: str, default: str = "") -> str:
 def configured_model() -> str:
     """读取模型配置，不读取目标 workspace 的 .env。"""
 
-    return configured_value("OPENAI_MODEL", "DASHSCOPE_MODEL", default=DEFAULT_MODEL)
+    return configured_value("MODEL", "OPENAI_MODEL", default=DEFAULT_MODEL)
 
 
 @dataclass(frozen=True)

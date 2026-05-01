@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
+
+from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from code_agent.config import configured_model, configured_value
 from code_agent.models import WorkspaceContext
@@ -13,7 +13,7 @@ from code_agent.prompting import BASE_SYSTEM_INSTRUCTIONS
 
 SYSTEM_INSTRUCTIONS = BASE_SYSTEM_INSTRUCTIONS
 
-DEFAULT_RESPONSES_API_URL = "https://api.openai.com/v1/responses"
+CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 
 
 class ModelProvider(Protocol):
@@ -41,56 +41,33 @@ class OfflineProvider:
 
 
 @dataclass(frozen=True)
-class OpenAIResponsesProvider:
-    """通过 OpenAI 兼容的 Responses API 生成 ReAct 下一步输出。"""
+class OpenAICompatibleChatProvider:
+    """通过 LangChain 调用 OpenAI 兼容的 chat model，生成 ReAct 下一步输出。"""
 
     name: str = "openai"
     system_instructions: str = BASE_SYSTEM_INSTRUCTIONS
 
     def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
         selected_model = configured_model() or model
-        api_key = configured_value("OPENAI_API_KEY", "DASHSCOPE_API_KEY")
+        api_key = configured_value("API_KEY", "OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "OPENAI_API_KEY or DASHSCOPE_API_KEY is required in Code-Agent .env "
-                "or process environment"
+                "API_KEY or OPENAI_API_KEY is required in Code-Agent .env or process environment"
             )
 
-        # Responses API 使用 instructions 承载系统约束，input 直接承载 runner 渲染出的任务历史。
-        payload = {
-            "model": selected_model,
-            "instructions": self.system_instructions,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": prompt,
-                        }
-                    ],
-                }
-            ],
-        }
-        request = urllib.request.Request(
-            _responses_api_url(),
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                body = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenAI request failed: HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"OpenAI request failed: {exc}") from exc
+            llm = ChatOpenAI(
+                model=selected_model,
+                api_key=SecretStr(api_key),
+                base_url=_langchain_base_url(),
+                timeout=120,
+                max_retries=0,
+            )
+            message = llm.invoke([("system", self.system_instructions), ("human", prompt)])
+        except Exception as exc:
+            raise RuntimeError(f"LangChain model request failed: {exc}") from exc
 
-        return _extract_response_text(json.loads(body))
+        return _extract_langchain_message_text(message)
 
 
 def make_provider(name: str, *, system_instructions: str | None = None) -> ModelProvider:
@@ -100,47 +77,47 @@ def make_provider(name: str, *, system_instructions: str | None = None) -> Model
     if normalized == "offline":
         return OfflineProvider()
     if normalized == "openai":
-        return OpenAIResponsesProvider(
+        return OpenAICompatibleChatProvider(
             system_instructions=system_instructions or BASE_SYSTEM_INSTRUCTIONS
         )
     raise ValueError(f"unknown provider: {name}")
 
 
-def _responses_api_url() -> str:
-    """根据 Code-Agent 配置或当前环境中的 base_url 推导 Responses API 地址。"""
+def _langchain_base_url() -> str | None:
+    """读取 LangChain ChatOpenAI 可接受的 OpenAI-compatible base URL。"""
 
-    explicit_url = configured_value("OPENAI_RESPONSES_URL", "DASHSCOPE_RESPONSES_URL")
-    if explicit_url:
-        return explicit_url
+    base_url = configured_value("BASE_URL", "OPENAI_BASE_URL")
+    if not base_url:
+        return None
 
-    base_url = configured_value("OPENAI_BASE_URL", "DASHSCOPE_BASE_URL")
-    if base_url:
-        return f"{base_url.rstrip('/')}/responses"
-    return DEFAULT_RESPONSES_API_URL
+    normalized = base_url.rstrip("/")
+    if normalized.endswith(CHAT_COMPLETIONS_SUFFIX):
+        return normalized[: -len(CHAT_COMPLETIONS_SUFFIX)].rstrip("/")
+    return normalized
 
 
-def _extract_response_text(payload: dict[str, object]) -> str:
-    """兼容 Responses API 的 output_text 快捷字段和结构化 output 列表。"""
+def _extract_langchain_message_text(message: object) -> str:
+    """从 LangChain message content 或文本 content block 中提取纯文本。"""
 
-    output_text = payload.get("output_text")
-    if isinstance(output_text, str) and output_text:
-        return output_text
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
 
     chunks: list[str] = []
-    output = payload.get("output")
-    if isinstance(output, list):
-        for item in output:
-            if not isinstance(item, dict):
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                chunks.append(block)
                 continue
-            content = item.get("content")
-            if not isinstance(content, list):
-                continue
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                text = part.get("text")
+            if isinstance(block, dict):
+                text = block.get("text")
                 if isinstance(text, str):
                     chunks.append(text)
+                continue
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                chunks.append(text)
     if chunks:
         return "\n".join(chunks)
-    return json.dumps(payload, indent=2)
+
+    return str(content)

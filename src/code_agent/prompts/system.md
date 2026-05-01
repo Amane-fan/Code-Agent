@@ -14,23 +14,43 @@ Each round must output exactly one of the following formats:
 
 For tool use:
 
-<summary>Brief public summary of the next step.</summary>
-<action>{"tool":"tool_name","args":{}}</action>
+<summary>
+Brief public summary of the next step.
+</summary>
+
+<action>
+{"tool":"tool_name","args":{}}
+</action>
 
 For final response:
 
-<summary>Brief public summary of what was completed.</summary>
-<final_answer>Final answer to the user.</final_answer>
+<summary>
+Brief public summary of what was completed.
+</summary>
+
+<final_answer>
+Final answer to the user.
+</final_answer>
 
 Use this exact structure when calling a tool:
 
-<summary>Read README.md to inspect the project overview.</summary>
-<action>{"tool":"read_file","args":{"path":"README.md"}}</action>
+<summary>
+Read README.md to inspect the project overview.
+</summary>
+
+<action>
+{"tool":"read_file","args":{"path":"README.md"}}
+</action>
 
 Use this exact structure when giving a final answer:
 
-<summary>The requested change has been completed and verified.</summary>
-<final_answer>Updated the tool documentation and ran the relevant tests.</final_answer>
+<summary>
+The requested change has been completed and verified.
+</summary>
+
+<final_answer>
+Updated the tool documentation and ran the relevant tests.
+</final_answer>
 
 Tool observations are returned as JSON inside an <observation> tag. Every observation has:
 - name: the tool name that produced the observation.

@@ -1,57 +1,35 @@
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import unittest
-import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from code_agent.models import WorkspaceContext
-from code_agent.providers import OpenAIResponsesProvider
-
-
-class FakeResponse:
-    def __enter__(self) -> FakeResponse:
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
-        return None
-
-    def read(self) -> bytes:
-        return b'{"output_text": "ok"}'
+from code_agent.providers import OpenAICompatibleChatProvider, _extract_langchain_message_text
 
 
 class ProviderTests(unittest.TestCase):
-    def test_openai_provider_uses_code_agent_env_for_request_configuration(self) -> None:
+    def test_openai_provider_uses_langchain_chat_model_with_code_agent_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
             (root / ".env").write_text(
-                "DASHSCOPE_API_KEY=workspace-key\n"
-                "DASHSCOPE_BASE_URL=https://workspace.example.test/v1\n"
-                "DASHSCOPE_MODEL=workspace-model\n",
+                "API_KEY=workspace-key\n"
+                "BASE_URL=https://workspace.example.test/v1\n"
+                "MODEL=workspace-model\n",
                 encoding="utf-8",
             )
             config_env = Path(tmp) / "code-agent.env"
             config_env.write_text(
-                "DASHSCOPE_API_KEY=file-key\n"
-                "DASHSCOPE_BASE_URL=https://dashscope.example.test/v1\n"
-                "DASHSCOPE_MODEL=qwen-from-file\n",
+                "API_KEY=file-key\n"
+                "BASE_URL=https://dashscope.example.test/v1\n"
+                "MODEL=qwen-from-file\n",
                 encoding="utf-8",
             )
             context = WorkspaceContext(root=root, prompt="task", git_status="", files=[])
-            captured: dict[str, object] = {}
-
-            def fake_urlopen(request: urllib.request.Request, timeout: int) -> FakeResponse:
-                captured["url"] = request.full_url
-                captured["authorization"] = request.get_header("Authorization")
-                data = request.data
-                assert isinstance(data, bytes)
-                captured["payload"] = json.loads(data.decode("utf-8"))
-                captured["timeout"] = timeout
-                return FakeResponse()
 
             with (
                 patch.dict(
@@ -64,48 +42,89 @@ class ProviderTests(unittest.TestCase):
                     },
                     clear=True,
                 ),
-                patch("urllib.request.urlopen", side_effect=fake_urlopen),
+                patch("code_agent.providers.ChatOpenAI") as chat_openai,
             ):
-                response = OpenAIResponsesProvider(system_instructions="dynamic instructions").complete(
+                chat_openai.return_value.invoke.return_value = SimpleNamespace(content="ok")
+                response = OpenAICompatibleChatProvider(system_instructions="dynamic instructions").complete(
                     "task",
                     context,
                     model="model-from-argument",
-                )
+            )
 
-            payload = captured["payload"]
-            assert isinstance(payload, dict)
             self.assertEqual(response, "ok")
-            self.assertEqual(payload["model"], "qwen-from-file")
-            self.assertEqual(captured["url"], "https://dashscope.example.test/v1/responses")
-            self.assertEqual(captured["authorization"], "Bearer file-key")
-            self.assertEqual(captured["timeout"], 120)
-            self.assertEqual(payload["instructions"], "dynamic instructions")
-            content = payload["input"][0]["content"][0]
-            self.assertEqual(content["type"], "input_text")
-            self.assertEqual(content["text"], "task")
-            self.assertNotIn("User task:", content["text"])
-            self.assertNotIn("Workspace context:", content["text"])
+            call_kwargs = chat_openai.call_args.kwargs
+            self.assertEqual(call_kwargs["model"], "qwen-from-file")
+            self.assertEqual(call_kwargs["api_key"].get_secret_value(), "file-key")
+            self.assertEqual(call_kwargs["base_url"], "https://dashscope.example.test/v1")
+            self.assertEqual(call_kwargs["timeout"], 120)
+            self.assertEqual(call_kwargs["max_retries"], 0)
+            chat_openai.return_value.invoke.assert_called_once_with(
+                [("system", "dynamic instructions"), ("human", "task")]
+            )
+
+    def test_openai_provider_strips_chat_completions_endpoint_for_langchain_base_url(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            config_env = Path(tmp) / "code-agent.env"
+            config_env.write_text(
+                "API_KEY=file-key\n"
+                "BASE_URL=https://compatible.example.test/v1/chat/completions\n"
+                "MODEL=compatible-model\n",
+                encoding="utf-8",
+            )
+            context = WorkspaceContext(root=root, prompt="task", git_status="", files=[])
+
+            with (
+                patch.dict(os.environ, {"CODE_AGENT_ENV_FILE": str(config_env)}, clear=True),
+                patch("code_agent.providers.ChatOpenAI") as chat_openai,
+            ):
+                chat_openai.return_value.invoke.return_value = SimpleNamespace(content="ok")
+                OpenAICompatibleChatProvider().complete("task", context, model="model-from-argument")
+
+            self.assertEqual(chat_openai.call_args.kwargs["base_url"], "https://compatible.example.test/v1")
 
     def test_openai_provider_ignores_workspace_env_when_config_is_missing_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
             (root / ".env").write_text(
-                "DASHSCOPE_API_KEY=workspace-key\n"
-                "DASHSCOPE_MODEL=workspace-model\n",
+                "API_KEY=workspace-key\n"
+                "MODEL=workspace-model\n",
                 encoding="utf-8",
             )
             config_env = Path(tmp) / "code-agent.env"
-            config_env.write_text("DASHSCOPE_MODEL=qwen-from-file\n", encoding="utf-8")
+            config_env.write_text("MODEL=qwen-from-file\n", encoding="utf-8")
             context = WorkspaceContext(root=root, prompt="task", git_status="", files=[])
 
-            with patch.dict(os.environ, {"CODE_AGENT_ENV_FILE": str(config_env)}, clear=True):
+            with (
+                patch.dict(os.environ, {"CODE_AGENT_ENV_FILE": str(config_env)}, clear=True),
+                patch("code_agent.providers.ChatOpenAI") as chat_openai,
+            ):
                 with self.assertRaisesRegex(RuntimeError, "API_KEY"):
-                    OpenAIResponsesProvider().complete(
+                    OpenAICompatibleChatProvider().complete(
                         "task",
                         context,
                         model="model-from-argument",
                     )
+                chat_openai.assert_not_called()
+
+    def test_extract_langchain_message_text_reads_string_content(self) -> None:
+        message = SimpleNamespace(content="plain response")
+
+        self.assertEqual(_extract_langchain_message_text(message), "plain response")
+
+    def test_extract_langchain_message_text_reads_text_content_blocks(self) -> None:
+        message = SimpleNamespace(
+            content=[
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ]
+        )
+
+        self.assertEqual(_extract_langchain_message_text(message), "first\nsecond")
 
 
 if __name__ == "__main__":

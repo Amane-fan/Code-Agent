@@ -5,7 +5,7 @@
 - CLI：解析顶层启动参数，并提供 `code-agent>` 交互式输入循环。
 - Conversation Session：保存当前终端窗口内的多轮历史、压缩摘要和近期完整轮次。
 - ReAct Runner：为每条用户输入执行一次工具循环，用 `while True` 编排模型调用、工具执行和最终回答。
-- Provider 层：默认使用 OpenAI 兼容 Responses API 调用，并保留确定性的离线模式。
+- Provider 层：默认用 LangChain `ChatOpenAI` 包装 OpenAI-compatible chat model 调用，并保留确定性的离线模式。
 - Prompt 构建：基础系统 prompt 来自 `src/code_agent/prompts/system.md`，工具说明和 skill 元数据在启动时动态拼接。
 - Skill Registry：从 Code-Agent 自身 `skills/` 目录读取 `SKILL.md` 元数据，并由 `load_skill` 按需返回完整内容。
 - 工具层：通过工具注册表统一提供工具执行和工具说明，默认包含文件、搜索、shell 和 `load_skill`。
