@@ -7,8 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from code_agent.models import WorkspaceContext
-from code_agent.providers import OpenAICompatibleChatProvider, _extract_langchain_message_text
+from code_agent.models import ModelCompletion, TokenUsage, WorkspaceContext
+from code_agent.providers import (
+    OpenAICompatibleChatProvider,
+    _extract_langchain_message_text,
+    _extract_langchain_token_usage,
+)
 
 
 class ProviderTests(unittest.TestCase):
@@ -44,14 +48,31 @@ class ProviderTests(unittest.TestCase):
                 ),
                 patch("code_agent.providers.ChatOpenAI") as chat_openai,
             ):
-                chat_openai.return_value.invoke.return_value = SimpleNamespace(content="ok")
+                chat_openai.return_value.invoke.return_value = SimpleNamespace(
+                    content="ok",
+                    usage_metadata={
+                        "input_tokens": 11,
+                        "output_tokens": 7,
+                        "total_tokens": 18,
+                    },
+                )
                 response = OpenAICompatibleChatProvider(system_instructions="dynamic instructions").complete(
                     "task",
                     context,
                     model="model-from-argument",
             )
 
-            self.assertEqual(response, "ok")
+            self.assertEqual(
+                response,
+                ModelCompletion(
+                    text="ok",
+                    usage=TokenUsage(
+                        prompt_tokens=11,
+                        completion_tokens=7,
+                        total_tokens=18,
+                    ),
+                ),
+            )
             call_kwargs = chat_openai.call_args.kwargs
             self.assertEqual(call_kwargs["model"], "qwen-from-file")
             self.assertEqual(call_kwargs["api_key"].get_secret_value(), "file-key")
@@ -82,9 +103,14 @@ class ProviderTests(unittest.TestCase):
                 patch("code_agent.providers.ChatOpenAI") as chat_openai,
             ):
                 chat_openai.return_value.invoke.return_value = SimpleNamespace(content="ok")
-                OpenAICompatibleChatProvider().complete("task", context, model="model-from-argument")
+                response = OpenAICompatibleChatProvider().complete(
+                    "task",
+                    context,
+                    model="model-from-argument",
+                )
 
             self.assertEqual(chat_openai.call_args.kwargs["base_url"], "https://compatible.example.test/v1")
+            self.assertEqual(response, ModelCompletion(text="ok"))
 
     def test_openai_provider_ignores_workspace_env_when_config_is_missing_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,6 +151,25 @@ class ProviderTests(unittest.TestCase):
         )
 
         self.assertEqual(_extract_langchain_message_text(message), "first\nsecond")
+
+    def test_extract_langchain_token_usage_reads_response_metadata(self) -> None:
+        message = SimpleNamespace(
+            response_metadata={
+                "token_usage": {
+                    "prompt_tokens": 13,
+                    "completion_tokens": 5,
+                    "total_tokens": 18,
+                }
+            }
+        )
+
+        self.assertEqual(
+            _extract_langchain_token_usage(message),
+            TokenUsage(prompt_tokens=13, completion_tokens=5, total_tokens=18),
+        )
+
+    def test_extract_langchain_token_usage_returns_none_when_missing(self) -> None:
+        self.assertIsNone(_extract_langchain_token_usage(SimpleNamespace(content="ok")))
 
 
 if __name__ == "__main__":

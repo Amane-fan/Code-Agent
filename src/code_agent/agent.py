@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable
 
 from code_agent.config import AgentConfig
 from code_agent.conversation import CompactionResult, ConversationSession
-from code_agent.models import AgentEvent, AgentRun
+from code_agent.models import AgentEvent, AgentRun, ModelCallUsage
 from code_agent.prompting import build_system_instructions
 from code_agent.providers import ModelProvider, make_provider
 from code_agent.react import ProviderFactory, run_react_agent
@@ -62,19 +63,36 @@ class CodingAgent:
             provider_factory=lambda name: provider,
             shell_approval=shell_approval,
             event_logger=event_logger,
-            save_session=save_session,
+            save_session=False,
             initial_history=initial_history,
             session_store=self.session_store,
             skill_registry=self.skill_registry,
         )
         self.conversation.record_turn(run.history[len(initial_history) :])
+        model_calls = list(run.model_calls)
         if self.conversation.should_auto_compact():
-            self.conversation.compact(provider)
+            compaction = self.conversation.compact(provider)
+            model_calls.extend(compaction.model_calls)
+        run = replace(run, model_calls=model_calls)
+        if save_session:
+            session_path = self.session_store.save(run)
+            run = replace(run, session_path=session_path)
         return run
 
-    def compact_memory(self) -> CompactionResult:
+    def compact_memory(
+        self,
+        *,
+        save_session: bool = False,
+        usage_logger: Callable[[ModelCallUsage], None] | None = None,
+    ) -> CompactionResult:
         provider = self._make_provider()
-        return self.conversation.compact(provider)
+        result = self.conversation.compact(provider)
+        for model_call in result.model_calls:
+            if usage_logger is not None:
+                usage_logger(model_call)
+        if save_session and result.model_calls:
+            self.session_store.append_model_calls(result.model_calls)
+        return result
 
     def memory_status(self) -> str:
         return self.conversation.status()

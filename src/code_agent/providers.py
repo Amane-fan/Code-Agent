@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from code_agent.config import configured_model, configured_value
-from code_agent.models import WorkspaceContext
+from code_agent.models import ModelCompletion, TokenUsage, WorkspaceContext
 from code_agent.prompting import BASE_SYSTEM_INSTRUCTIONS
 
 
@@ -23,7 +23,7 @@ class ModelProvider(Protocol):
     def name(self) -> str:
         ...
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
         ...
 
 
@@ -33,10 +33,12 @@ class OfflineProvider:
 
     name: str = "offline"
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
-        return (
-            "<summary>离线模式不会调用远端模型或主动选择工具。</summary>\n"
-            "<final_answer>Offline mode received the task and produced no tool actions.</final_answer>"
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> ModelCompletion:
+        return ModelCompletion(
+            text=(
+                "<summary>离线模式不会调用远端模型或主动选择工具。</summary>\n"
+                "<final_answer>Offline mode received the task and produced no tool actions.</final_answer>"
+            )
         )
 
 
@@ -47,7 +49,7 @@ class OpenAICompatibleChatProvider:
     name: str = "openai"
     system_instructions: str = BASE_SYSTEM_INSTRUCTIONS
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> ModelCompletion:
         selected_model = configured_model() or model
         api_key = configured_value("API_KEY", "OPENAI_API_KEY")
         if not api_key:
@@ -67,7 +69,10 @@ class OpenAICompatibleChatProvider:
         except Exception as exc:
             raise RuntimeError(f"LangChain model request failed: {exc}") from exc
 
-        return _extract_langchain_message_text(message)
+        return ModelCompletion(
+            text=_extract_langchain_message_text(message),
+            usage=_extract_langchain_token_usage(message),
+        )
 
 
 def make_provider(name: str, *, system_instructions: str | None = None) -> ModelProvider:
@@ -121,3 +126,63 @@ def _extract_langchain_message_text(message: object) -> str:
         return "\n".join(chunks)
 
     return str(content)
+
+
+def _extract_langchain_token_usage(message: object) -> TokenUsage | None:
+    """Extract token usage from common LangChain AIMessage metadata shapes."""
+
+    usage_metadata = _object_value(message, "usage_metadata")
+    usage = _usage_from_mapping_or_object(
+        usage_metadata,
+        prompt_keys=("input_tokens", "prompt_tokens"),
+        completion_keys=("output_tokens", "completion_tokens"),
+        total_keys=("total_tokens",),
+    )
+    if usage is not None:
+        return usage
+
+    response_metadata = _object_value(message, "response_metadata")
+    token_usage = _object_value(response_metadata, "token_usage")
+    return _usage_from_mapping_or_object(
+        token_usage,
+        prompt_keys=("prompt_tokens", "input_tokens"),
+        completion_keys=("completion_tokens", "output_tokens"),
+        total_keys=("total_tokens",),
+    )
+
+
+def _usage_from_mapping_or_object(
+    value: object,
+    *,
+    prompt_keys: tuple[str, ...],
+    completion_keys: tuple[str, ...],
+    total_keys: tuple[str, ...],
+) -> TokenUsage | None:
+    if value is None:
+        return None
+    prompt_tokens = _first_int(value, prompt_keys)
+    completion_tokens = _first_int(value, completion_keys)
+    total_tokens = _first_int(value, total_keys)
+    if prompt_tokens is None and completion_tokens is None and total_tokens is None:
+        return None
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+    )
+
+
+def _first_int(value: object, keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        raw = _object_value(value, key)
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, int):
+            return raw
+    return None
+
+
+def _object_value(value: object, key: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)

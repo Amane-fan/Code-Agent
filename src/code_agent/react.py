@@ -9,7 +9,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from code_agent.config import AgentConfig
-from code_agent.models import AgentEvent, AgentRun, ToolResult, WorkspaceContext
+from code_agent.models import (
+    AgentEvent,
+    AgentRun,
+    ModelCallUsage,
+    ModelCompletion,
+    ToolResult,
+    WorkspaceContext,
+)
 from code_agent.providers import make_provider
 from code_agent.session import SessionStore
 from code_agent.skills import SkillRegistry
@@ -26,7 +33,7 @@ class ModelProvider(Protocol):
     def name(self) -> str:
         ...
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
         ...
 
 
@@ -56,6 +63,7 @@ class AgentGraphState(TypedDict):
     iterations: int
     final_answer: str | None
     pending_action: ActionCall | None
+    model_calls: list[ModelCallUsage]
 
 
 def run_react_agent(
@@ -106,12 +114,14 @@ def run_react_agent(
                 "iterations": iterations,
                 "final_answer": final_answer,
                 "pending_action": None,
+                "model_calls": [],
             }
         ),
     )
     history = final_state["history"]
     iterations = final_state["iterations"]
     final_answer = final_state["final_answer"] or ""
+    model_calls = final_state["model_calls"]
 
     run = AgentRun(
         prompt=prompt,
@@ -121,6 +131,7 @@ def run_react_agent(
         response_text=final_answer,
         history=history,
         iterations=iterations,
+        model_calls=model_calls,
     )
     if save_session:
         store = session_store or SessionStore(config.session_dir)
@@ -168,13 +179,24 @@ def _build_react_graph() -> CompiledStateGraph[
 
 def _call_model_node(state: AgentGraphState) -> dict[str, Any]:
     history = list(state["history"])
+    model_calls = list(state["model_calls"])
     iteration = state["iterations"] + 1
-    response_text = state["provider"].complete(
+    response = state["provider"].complete(
         _render_prompt(history),
         state["context"],
         model=state["model"],
     )
-    parsed = _parse_response(response_text)
+    completion = _normalize_completion(response)
+    model_calls.append(
+        ModelCallUsage(
+            provider=state["provider"].name,
+            model=state["model"],
+            purpose="task",
+            ok=True,
+            usage=completion.usage,
+        )
+    )
+    parsed = _parse_response(completion.text)
     if parsed.summary:
         _append(history, AgentEvent("summary", parsed.summary), state["event_logger"])
 
@@ -196,6 +218,7 @@ def _call_model_node(state: AgentGraphState) -> dict[str, Any]:
                 "iterations": iteration,
                 "final_answer": None,
                 "pending_action": None,
+                "model_calls": model_calls,
             }
 
         _append(
@@ -208,6 +231,7 @@ def _call_model_node(state: AgentGraphState) -> dict[str, Any]:
             "iterations": iteration,
             "final_answer": None,
             "pending_action": action,
+            "model_calls": model_calls,
         }
 
     final_answer = parsed.final_answer or parsed.fallback_answer or ""
@@ -217,6 +241,7 @@ def _call_model_node(state: AgentGraphState) -> dict[str, Any]:
         "iterations": iteration,
         "final_answer": final_answer,
         "pending_action": None,
+        "model_calls": model_calls,
     }
 
 
@@ -247,6 +272,7 @@ def _limit_node(state: AgentGraphState) -> dict[str, Any]:
         "history": history,
         "final_answer": final_answer,
         "pending_action": None,
+        "model_calls": state["model_calls"],
     }
 
 
@@ -282,6 +308,12 @@ def _append(history: list[AgentEvent], event: AgentEvent, logger: EventLogger | 
 
 def _render_prompt(history: list[AgentEvent]) -> str:
     return "\n".join(event.tag for event in history)
+
+
+def _normalize_completion(response: str | ModelCompletion) -> ModelCompletion:
+    if isinstance(response, ModelCompletion):
+        return response
+    return ModelCompletion(text=response)
 
 
 def _parse_response(text: str) -> ParsedResponse:

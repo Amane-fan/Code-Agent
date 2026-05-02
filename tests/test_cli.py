@@ -9,17 +9,17 @@ from pathlib import Path
 from unittest.mock import ANY, patch
 
 from code_agent.cli import main
-from code_agent.models import WorkspaceContext
+from code_agent.models import ModelCompletion, TokenUsage, WorkspaceContext
 
 
 class FakeProvider:
     name = "fake"
 
-    def __init__(self, responses: list[str] | None = None) -> None:
+    def __init__(self, responses: list[str | ModelCompletion] | None = None) -> None:
         self.responses = responses or ["<summary>完成。</summary>\n<final_answer>default provider response</final_answer>"]
         self.prompts: list[str] = []
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
         self.prompts.append(prompt)
         if not self.responses:
             raise AssertionError("provider called too many times")
@@ -130,6 +130,35 @@ class CliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn("Compacted memory", stdout.getvalue())
             self.assertIn("remembered first", stdout.getvalue())
+
+    def test_interactive_renders_token_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = FakeProvider(
+                [
+                    ModelCompletion(
+                        text="<summary>完成。</summary>\n<final_answer>answer</final_answer>",
+                        usage=TokenUsage(
+                            prompt_tokens=8,
+                            completion_tokens=3,
+                            total_tokens=11,
+                        ),
+                    )
+                ]
+            )
+            stdout = StringIO()
+
+            with (
+                patch("code_agent.cli._read_input", side_effect=["task", "/quit"]),
+                patch("code_agent.agent.make_provider", return_value=provider),
+                redirect_stdout(stdout),
+                redirect_stderr(StringIO()),
+            ):
+                exit_code = main(["--workspace", str(root), "--provider", "offline", "--no-session"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Token Usage", stdout.getvalue())
+            self.assertIn("total: 11", stdout.getvalue())
 
     def test_interactive_shell_command_can_be_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

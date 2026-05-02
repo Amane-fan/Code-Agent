@@ -14,7 +14,7 @@ from typer.main import get_command
 
 from code_agent.agent import CodingAgent
 from code_agent.config import DEFAULT_PROVIDER, AgentConfig
-from code_agent.models import AgentEvent
+from code_agent.models import AgentEvent, ModelCallUsage
 from code_agent.terminal import read_prompt
 
 
@@ -60,6 +60,26 @@ class TerminalRenderer:
         else:
             renderable = Text(event.content)
         self.console.print(Panel(renderable, title=title, border_style=border_style))
+
+    def model_usage(self, model_call: ModelCallUsage) -> None:
+        usage = model_call.usage
+        if usage is None:
+            message = (
+                f"provider: {model_call.provider}\n"
+                f"model: {model_call.model}\n"
+                f"purpose: {model_call.purpose}\n"
+                "tokens: unknown"
+            )
+        else:
+            message = (
+                f"provider: {model_call.provider}\n"
+                f"model: {model_call.model}\n"
+                f"purpose: {model_call.purpose}\n"
+                f"prompt: {_format_token_count(usage.prompt_tokens)}\n"
+                f"completion: {_format_token_count(usage.completion_tokens)}\n"
+                f"total: {_format_token_count(usage.total_tokens)}"
+            )
+        self.console.print(Panel(Text(message), title="Token Usage", border_style="cyan"))
 
     def info(self, message: str, *, title: str = "Info") -> None:
         self.console.print(Panel(Text(message), title=title, border_style="cyan"))
@@ -148,7 +168,10 @@ def _interactive(*, workspace: Path, provider: str, no_session: bool) -> int:
         if prompt in EXIT_COMMANDS:
             return 0
         if prompt == COMPACT_COMMAND:
-            result = agent.compact_memory()
+            result = agent.compact_memory(
+                save_session=not no_session,
+                usage_logger=renderer.model_usage,
+            )
             if result.compacted:
                 fallback_note = " (fallback)" if result.used_fallback else ""
                 renderer.info(result.summary, title=f"Compacted memory{fallback_note}")
@@ -171,10 +194,18 @@ def _interactive(*, workspace: Path, provider: str, no_session: bool) -> int:
         )
         if run.session_path:
             renderer.info(str(run.session_path), title="Session")
+        for model_call in run.model_calls:
+            renderer.model_usage(model_call)
 
 
 def _print_event(event: AgentEvent) -> None:
     TerminalRenderer(Console()).event(event)
+
+
+def _format_token_count(value: int | None) -> str:
+    if value is None:
+        return "unknown"
+    return str(value)
 
 
 def _confirm_shell_command(command: str) -> bool:

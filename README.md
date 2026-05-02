@@ -15,7 +15,7 @@ AI 编程系统的基础实现。
 - **受控工具集**：内置文件读取、文件写入、文本替换、文件列表、文本搜索、shell 请求和 skill 加载工具。
 - **人工确认 shell 命令**：模型请求执行 shell 命令时，CLI 会先展示命令并等待用户确认。
 - **上下文压缩**：历史过长时可将较旧轮次压缩为 `<memory>`，同时保留近期完整事件。
-- **会话审计日志**：默认将交互窗口内的多轮运行记录到本地 JSON 日志，便于排查和复盘。
+- **会话审计日志**：默认将交互窗口内的多轮运行和模型 token 消耗记录到本地 JSON 日志，便于排查和复盘。
 - **按需加载 skills**：启动上下文只包含 skill 元数据，完整 `SKILL.md` 只能通过 `load_skill` 工具进入模型上下文。
 
 ## 运行要求
@@ -147,11 +147,11 @@ call_model/execute_tool -- max_iterations reached --> limit -> END
 - **CLI**：基于 Typer、prompt_toolkit 和 Rich 实现交互式终端体验。
 - **Conversation Session**：维护当前窗口内的多轮历史、压缩摘要和近期完整轮次。
 - **LangGraph ReAct Runner**：编排模型调用、工具执行、最大轮次保护和最终回答。
-- **Provider 层**：封装 OpenAI-compatible chat model，并提供确定性的离线模式。
+- **Provider 层**：封装 OpenAI-compatible chat model，提取真实 token usage，并提供确定性的离线模式。
 - **Prompt 构建**：加载基础系统 prompt，并动态拼接工具说明和 skill 元数据。
 - **Tool Registry**：统一注册工具执行逻辑和工具说明。
 - **Skill Registry**：从 Code Agent 自身受控目录读取 skill 元数据，并支持按需加载完整内容。
-- **Session Logging**：将每个交互窗口的运行历史写入本地 JSON 日志。
+- **Session Logging**：将每个交互窗口的运行历史和模型调用 token usage 写入本地 JSON 日志。
 
 更详细的设计说明见 [架构说明](docs/architecture.md)。
 

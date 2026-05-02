@@ -11,6 +11,7 @@ workspace。
 - 作为开发者，我可以用 `code-agent --workspace <dir>` 启动一个绑定到单一 workspace 的交互会话。
 - 作为开发者，我可以连续输入问题或修改请求，后续输入会继承当前窗口内的历史。
 - 作为开发者，我可以看到 Agent 的 `<memory>`、`<task>`、`<summary>`、`<action>`、`<observation>`、`<final_answer>` 行为日志。
+- 作为开发者，我可以看到每次模型调用的 token 消耗；如果 provider 没有返回 usage，则显示为 unknown。
 - 作为开发者，我可以在历史过长前使用 `/compact` 手动压缩上下文，也可以让 Agent 自动压缩旧轮次。
 - 作为开发者，我可以用 `/memory` 查看当前压缩记忆，用 `/clear` 清空当前窗口记忆。
 - 作为开发者，我可以让模型通过 `read_file`、`write_file`、`edit_file`、`list_files`、`grep_search` 检查或修改文件。
@@ -31,4 +32,4 @@ workspace。
 - `run_shell` 每次执行前都需要用户确认。
 - 工具说明在启动时从工具注册表动态生成，系统 prompt 中不再硬编码具体工具清单。
 - 启动上下文只包含 skill 元数据；完整 skill 正文只能通过 `load_skill` 工具 observation 进入后续上下文。
-- 每个交互窗口可以保存为一份本地 JSON 会话日志，同一窗口内的多轮运行都写入该文件，便于审计和复盘。
+- 每个交互窗口可以保存为一份本地 JSON 会话日志，同一窗口内的多轮运行和模型调用 token usage 都写入该文件，便于审计和复盘。

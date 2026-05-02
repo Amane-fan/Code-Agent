@@ -45,6 +45,35 @@ RepoContext = WorkspaceContext
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    """One model response's token counts when the provider reports them."""
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class ModelCompletion:
+    """Provider response text plus optional usage metadata."""
+
+    text: str
+    usage: TokenUsage | None = None
+
+
+@dataclass(frozen=True)
+class ModelCallUsage:
+    """Audit record for one model provider call."""
+
+    provider: str
+    model: str
+    purpose: str
+    ok: bool
+    usage: TokenUsage | None = None
+    error: str = ""
+
+
+@dataclass(frozen=True)
 class ToolResult:
     """所有本地工具共享的返回格式，便于 Agent 统一处理成功、失败和元数据。"""
 
@@ -98,6 +127,7 @@ class AgentRun:
     response_text: str
     history: list[AgentEvent]
     iterations: int
+    model_calls: list[ModelCallUsage] = field(default_factory=list)
     context_files: list[str] = field(default_factory=list)
     session_path: Path | None = None
 

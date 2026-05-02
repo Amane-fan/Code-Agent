@@ -9,17 +9,17 @@ from langgraph.graph import StateGraph
 
 from code_agent.agent import CodingAgent
 from code_agent.config import AgentConfig
-from code_agent.models import WorkspaceContext
+from code_agent.models import ModelCompletion, TokenUsage, WorkspaceContext
 
 
 class SequencedProvider:
     name = "fake"
 
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(self, responses: list[str | ModelCompletion]) -> None:
         self.responses = responses
         self.prompts: list[str] = []
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
         self.prompts.append(prompt)
         if not self.responses:
             raise AssertionError("provider called too many times")
@@ -63,6 +63,66 @@ class ReactLoopTests(unittest.TestCase):
             self.assertNotIn("Only use these tools", provider.prompts[0])
             self.assertNotIn("Tool schemas", provider.prompts[0])
             self.assertNotIn("Workspace:", provider.prompts[0])
+
+    def test_model_call_usage_is_recorded_without_history_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = SequencedProvider(
+                [
+                    ModelCompletion(
+                        text='<summary>需要列文件。</summary>\n'
+                        '<action>{"tool":"list_files","args":{}}</action>',
+                        usage=TokenUsage(
+                            prompt_tokens=10,
+                            completion_tokens=5,
+                            total_tokens=15,
+                        ),
+                    ),
+                    ModelCompletion(
+                        text="<summary>完成。</summary>\n<final_answer>done</final_answer>",
+                        usage=TokenUsage(
+                            prompt_tokens=20,
+                            completion_tokens=6,
+                            total_tokens=26,
+                        ),
+                    ),
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="offline"),
+                provider_factory=lambda name: provider,
+            ).run("list files", save_session=False)
+
+            self.assertEqual(run.final_answer, "done")
+            self.assertEqual(len(run.model_calls), 2)
+            self.assertEqual(run.model_calls[0].purpose, "task")
+            first_usage = run.model_calls[0].usage
+            second_usage = run.model_calls[1].usage
+            assert first_usage is not None
+            assert second_usage is not None
+            self.assertEqual(first_usage.total_tokens, 15)
+            self.assertEqual(second_usage.prompt_tokens, 20)
+            self.assertEqual(
+                [event.kind for event in run.history],
+                ["task", "summary", "action", "observation", "summary", "final_answer"],
+            )
+
+    def test_string_provider_response_records_unknown_model_call_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            provider = SequencedProvider(
+                ["<summary>完成。</summary>\n<final_answer>done</final_answer>"]
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="offline"),
+                provider_factory=lambda name: provider,
+            ).run("task", save_session=False)
+
+            self.assertEqual(len(run.model_calls), 1)
+            self.assertEqual(run.model_calls[0].purpose, "task")
+            self.assertIsNone(run.model_calls[0].usage)
 
     def test_unclosed_final_answer_tag_does_not_render_protocol_tags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -181,6 +241,51 @@ class ReactLoopTests(unittest.TestCase):
             self.assertIn("<task>third task</task>", provider.prompts[-1])
             self.assertIn("<task>fourth task</task>", provider.prompts[-1])
 
+    def test_manual_compact_saves_model_call_usage_to_session_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            session_root = Path(tmp) / "sessions"
+            provider = SequencedProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
+                    ModelCompletion(
+                        text="<summary>压缩完成。</summary>\n<final_answer>memory</final_answer>",
+                        usage=TokenUsage(
+                            prompt_tokens=30,
+                            completion_tokens=10,
+                            total_tokens=40,
+                        ),
+                    ),
+                ]
+            )
+            agent = CodingAgent(
+                AgentConfig(
+                    workspace_path=root,
+                    provider="offline",
+                    session_root=session_root,
+                ),
+                provider_factory=lambda name: provider,
+            )
+
+            agent.run("first task", save_session=True)
+            agent.run("second task", save_session=True)
+            agent.run("third task", save_session=True)
+            result = agent.compact_memory(save_session=True)
+
+            self.assertEqual(result.model_calls[0].purpose, "compaction")
+            compact_usage = result.model_calls[0].usage
+            assert compact_usage is not None
+            self.assertEqual(compact_usage.total_tokens, 40)
+            session_files = list((session_root / "sessions").glob("*.json"))
+            self.assertEqual(len(session_files), 1)
+            data = json.loads(session_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(data["model_calls"][-1]["purpose"], "compaction")
+            self.assertEqual(data["model_calls"][-1]["usage"]["total_tokens"], 40)
+            self.assertEqual(len(data["runs"]), 3)
+
     def test_compact_falls_back_when_model_summary_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -233,6 +338,49 @@ class ReactLoopTests(unittest.TestCase):
 
             self.assertIn("auto memory", agent.memory_status())
             self.assertIn("<memory>auto memory</memory>", provider.prompts[-1])
+
+    def test_auto_compact_model_call_usage_is_attached_to_current_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            session_root = Path(tmp) / "sessions"
+            provider = SequencedProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                    ModelCompletion(
+                        text="<summary>压缩完成。</summary>\n<final_answer>auto memory</final_answer>",
+                        usage=TokenUsage(
+                            prompt_tokens=21,
+                            completion_tokens=9,
+                            total_tokens=30,
+                        ),
+                    ),
+                ]
+            )
+            agent = CodingAgent(
+                AgentConfig(
+                    workspace_path=root,
+                    provider="offline",
+                    session_root=session_root,
+                    max_conversation_chars=1,
+                    recent_turns_to_keep=1,
+                ),
+                provider_factory=lambda name: provider,
+            )
+
+            agent.run("first task", save_session=True)
+            second = agent.run("second task", save_session=True)
+
+            self.assertEqual(second.model_calls[-1].purpose, "compaction")
+            compact_usage = second.model_calls[-1].usage
+            assert compact_usage is not None
+            self.assertEqual(compact_usage.total_tokens, 30)
+            session_files = list((session_root / "sessions").glob("*.json"))
+            self.assertEqual(len(session_files), 1)
+            data = json.loads(session_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(data["runs"][1]["model_calls"][-1]["purpose"], "compaction")
+            self.assertEqual(data["model_calls"][-1]["usage"]["total_tokens"], 30)
 
     def test_invalid_action_json_returns_observation_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -342,6 +490,40 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(data["history"][1]["tag"], "<summary>完成。</summary>")
             self.assertEqual(data["history"][-1]["tag"], "<final_answer>answer</final_answer>")
 
+    def test_session_log_contains_model_call_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            session_root = Path(tmp) / "sessions"
+            provider = SequencedProvider(
+                [
+                    ModelCompletion(
+                        text="<summary>完成。</summary>\n<final_answer>answer</final_answer>",
+                        usage=TokenUsage(
+                            prompt_tokens=9,
+                            completion_tokens=4,
+                            total_tokens=13,
+                        ),
+                    )
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(
+                    workspace_path=root,
+                    provider="offline",
+                    session_root=session_root,
+                ),
+                provider_factory=lambda name: provider,
+            ).run("task", save_session=True)
+
+            self.assertIsNotNone(run.session_path)
+            assert run.session_path is not None
+            data = json.loads(run.session_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["model_calls"][0]["purpose"], "task")
+            self.assertEqual(data["model_calls"][0]["usage"]["total_tokens"], 13)
+            self.assertEqual(data["runs"][0]["model_calls"][0]["usage"]["prompt_tokens"], 9)
+
     def test_same_agent_writes_multiple_runs_to_one_session_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
@@ -373,6 +555,7 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(len(data["runs"]), 2)
             self.assertEqual(data["runs"][0]["prompt"], "first task")
             self.assertEqual(data["runs"][1]["prompt"], "second task")
+            self.assertEqual(len(data["model_calls"]), 2)
             second_history_tags = [event["tag"] for event in data["runs"][1]["history"]]
             self.assertIn("<final_answer>first answer</final_answer>", second_history_tags)
 

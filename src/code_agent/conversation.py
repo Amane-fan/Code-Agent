@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from code_agent.models import AgentEvent, WorkspaceContext
+from code_agent.models import AgentEvent, ModelCallUsage, ModelCompletion, WorkspaceContext
 
 
 class CompletionProvider(Protocol):
@@ -13,7 +13,7 @@ class CompletionProvider(Protocol):
     def name(self) -> str:
         ...
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
         ...
 
 
@@ -24,6 +24,7 @@ class CompactionResult:
     used_fallback: bool
     source_events: int
     error: str = ""
+    model_calls: list[ModelCallUsage] = field(default_factory=list)
 
 
 @dataclass
@@ -67,7 +68,7 @@ class ConversationSession:
                 source_events=0,
             )
 
-        summary, used_fallback, error = self._summarize(provider, events_to_compact)
+        summary, used_fallback, error, model_calls = self._summarize(provider, events_to_compact)
         self.memory_summary = summary
         self.turns = self.turns[split_index:]
         return CompactionResult(
@@ -76,6 +77,7 @@ class ConversationSession:
             used_fallback=used_fallback,
             source_events=len(events_to_compact),
             error=error,
+            model_calls=model_calls,
         )
 
     def status(self) -> str:
@@ -105,10 +107,10 @@ class ConversationSession:
         self,
         provider: CompletionProvider,
         events: list[AgentEvent],
-    ) -> tuple[str, bool, str]:
+    ) -> tuple[str, bool, str, list[ModelCallUsage]]:
         fallback = _fallback_summary(events)
         if provider.name == "offline":
-            return fallback, True, "offline provider does not summarize memory"
+            return fallback, True, "offline provider does not summarize memory", []
         try:
             response = provider.complete(
                 _compression_prompt(events),
@@ -120,12 +122,33 @@ class ConversationSession:
                 ),
                 model=self.model,
             )
-            summary = _summary_from_response(response)
+            completion = _normalize_completion(response)
+            model_call = ModelCallUsage(
+                provider=provider.name,
+                model=self.model,
+                purpose="compaction",
+                ok=True,
+                usage=completion.usage,
+            )
+            summary = _summary_from_response(completion.text)
             if not summary:
-                return fallback, True, "model returned an empty memory summary"
-            return _truncate(summary, 12_000), False, ""
+                return fallback, True, "model returned an empty memory summary", [model_call]
+            return _truncate(summary, 12_000), False, "", [model_call]
         except Exception as exc:
-            return fallback, True, str(exc)
+            return (
+                fallback,
+                True,
+                str(exc),
+                [
+                    ModelCallUsage(
+                        provider=provider.name,
+                        model=self.model,
+                        purpose="compaction",
+                        ok=False,
+                        error=str(exc),
+                    )
+                ],
+            )
 
 
 def _compression_prompt(events: list[AgentEvent]) -> str:
@@ -142,6 +165,12 @@ def _compression_prompt(events: list[AgentEvent]) -> str:
 
 def _summary_from_response(text: str) -> str:
     return _extract_tag(text, "final_answer") or _extract_tag(text, "summary") or text.strip()
+
+
+def _normalize_completion(response: str | ModelCompletion) -> ModelCompletion:
+    if isinstance(response, ModelCompletion):
+        return response
+    return ModelCompletion(text=response)
 
 
 def _extract_tag(text: str, tag: str) -> str:
