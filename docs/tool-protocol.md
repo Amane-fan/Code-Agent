@@ -60,6 +60,17 @@
 启动时，Code-Agent 从自身受控的 skills 目录加载 `SKILL.md` 元数据，并把可用 skill 的名称和描述注入
 instructions。完整 skill 正文不会在启动时进入上下文。
 
+skill 元数据使用标签形式渲染，每个 `<skill>` 包含 `name` 和 `description`：
+
+```text
+<skills>
+<skill>
+  <name>skill_name</name>
+  <description>When to use this skill.</description>
+</skill>
+</skills>
+```
+
 如果模型判断需要某个 skill，应先调用：
 
 ```text

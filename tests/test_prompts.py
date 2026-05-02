@@ -82,8 +82,16 @@ class PromptTests(unittest.TestCase):
             for detail in details:
                 self.assertIn(detail, system_instructions)
 
-        self.assertIn("Available skills:", system_instructions)
-        self.assertIn("- python: Use when editing Python code.", system_instructions)
+        self.assertIn("<skills>", system_instructions)
+        self.assertIn(
+            "<skill>\n"
+            "  <name>python</name>\n"
+            "  <description>Use when editing Python code.</description>\n"
+            "</skill>",
+            system_instructions,
+        )
+        self.assertIn("</skills>", system_instructions)
+        self.assertNotIn("- python: Use when editing Python code.", system_instructions)
         self.assertNotIn("Full skill body should not be in startup context.", system_instructions)
         self.assertIn("Target workspace:", system_instructions)
         self.assertIn(str(root.resolve()), system_instructions)

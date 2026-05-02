@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from importlib.resources import files
 from pathlib import Path
 
@@ -51,12 +52,21 @@ def _render_skills(skill_registry: SkillRegistry) -> str:
             'call load_skill with {"name":"skill_name"} and wait for the observation '
             "before relying on the full instructions."
         ),
+        "<skills>",
     ]
     metadata = skill_registry.list_metadata()
     if not metadata:
-        lines.append("- No skills are available.")
+        lines.append("</skills>")
         return "\n".join(lines)
 
     for skill in metadata:
-        lines.append(f"- {skill.name}: {skill.description}")
+        lines.extend(
+            [
+                "<skill>",
+                f"  <name>{escape(skill.name)}</name>",
+                f"  <description>{escape(skill.description)}</description>",
+                "</skill>",
+            ]
+        )
+    lines.append("</skills>")
     return "\n".join(lines)
