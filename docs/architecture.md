@@ -8,7 +8,7 @@
 - Provider 层：默认用 LangChain `ChatOpenAI` 包装 OpenAI-compatible chat model 调用，并保留确定性的离线模式。
 - Prompt 构建：基础系统 prompt 来自 `src/code_agent/prompts/system.md`，工具说明和 skill 元数据在启动时动态拼接。
 - Skill Registry：从 Code-Agent 自身 `skills/` 目录读取 `SKILL.md` 元数据，并由 `load_skill` 按需返回完整内容。
-- 工具层：通过工具注册表统一提供工具执行和工具说明，默认包含文件、搜索、shell 和 `load_skill`。
+- 工具层：每个工具继承 `Tool` 基类并声明描述、参数 schema、返回 schema 和执行实现；工具注册表启动时自动发现包内工具，默认包含文件、搜索、shell 和 `load_skill`。
 - 会话存储：每个交互窗口创建一份 JSON 日志，并把同一窗口内的多轮运行追加到 `runs` 列表。
 
 ## 数据流

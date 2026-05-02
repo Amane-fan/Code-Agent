@@ -65,16 +65,17 @@ class PromptTests(unittest.TestCase):
             self.assertIn(field, system_instructions)
 
         expected_tool_details = {
-            "read_file": ['{"path":"relative/path"}', "redacted file contents"],
-            "write_file": ['{"path":"relative/path","content":"..."}', "written path and byte count"],
+            "read_file": ['"path"', '"required":["path"]', "redacted file contents"],
+            "write_file": ['"content"', '"required":["path","content"]', "written path and byte count"],
             "edit_file": [
-                '{"path":"relative/path","old_text":"...","new_text":"..."}',
+                '"old_text"',
+                '"new_text"',
                 "old_text must match exactly once",
             ],
             "list_files": ["{}", "newline-separated relative paths"],
-            "grep_search": ['{"pattern":"text"}', "path:line: text"],
-            "run_shell": ['{"command":"shell command"}', "stdout/stderr"],
-            "load_skill": ['{"name":"skill_name"}', "full skill instructions"],
+            "grep_search": ['"pattern"', "path:line: text"],
+            "run_shell": ['"command"', "stdout/stderr"],
+            "load_skill": ['"name"', "full skill instructions"],
         }
         for tool, details in expected_tool_details.items():
             self.assertIn(tool, system_instructions)

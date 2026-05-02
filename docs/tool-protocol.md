@@ -37,7 +37,13 @@
 
 ## 当前工具
 
-工具清单由启动时的工具注册表动态生成，并注入系统 instructions。默认工具包括：
+工具清单由启动时的工具注册表动态生成，并注入系统 instructions。每个可调用工具都继承
+`code_agent.tools.Tool`，声明稳定的 `name`、`description`、`parameters_schema`、`returns_schema`，
+并实现 `run(args)`。启动时会自动发现并导入 `code_agent.tools` 包内模块，把其中的工具子类注册到
+默认工具注册表。后续新增内置工具时，只需要在该包内新增工具类文件并提供这些字段和实现。
+
+`parameters_schema` 和 `returns_schema` 使用 JSON Schema 风格的对象描述。当前框架把 schema 渲染给
+模型作为调用协议说明；参数的业务校验仍由各工具实现自行完成。默认工具包括：
 
 - `read_file({"path": "relative/path"})`：读取一个非敏感 UTF-8 文本文件。
 - `write_file({"path": "relative/path", "content": "..."})`：创建或覆盖一个非敏感文本文件。

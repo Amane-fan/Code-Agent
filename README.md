@@ -230,7 +230,7 @@ src/code_agent/
   react.py          LangGraph ReAct 执行器
   session.py        会话日志写入
   skills.py         Skill 元数据发现与加载
-  tools.py          文件、搜索、shell 和 skill 工具
+  tools/            Tool 基类、自动注册和默认工具实现
 docs/               产品、架构、安全、工具协议和评测文档
 tests/              单元测试与集成测试
 ```

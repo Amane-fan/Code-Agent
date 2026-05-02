@@ -36,8 +36,8 @@ def _render_tools(tool_registry: ToolRegistry) -> str:
         lines.extend(
             [
                 f"- {spec.name}: {spec.description}",
-                f"  Call args: {spec.args_schema}",
-                f"  Returns: {spec.returns}",
+                f"  Parameters schema: {spec.args_schema}",
+                f"  Returns schema: {spec.returns}",
             ]
         )
     return "\n".join(lines)
