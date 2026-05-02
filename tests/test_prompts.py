@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from code_agent.agent import CodingAgent
+from code_agent.config import AgentConfig
 from code_agent.prompting import BASE_SYSTEM_INSTRUCTIONS, build_system_instructions
 from code_agent.skills import SkillRegistry
 from code_agent.tools import create_workspace_tool_registry
@@ -56,6 +58,7 @@ class PromptTests(unittest.TestCase):
             system_instructions = build_system_instructions(
                 tool_registry=tool_registry,
                 skill_registry=skill_registry,
+                workspace_root=root,
             )
 
         for field in ["name", "ok", "output", "error", "metadata"]:
@@ -81,6 +84,24 @@ class PromptTests(unittest.TestCase):
         self.assertIn("Available skills:", system_instructions)
         self.assertIn("- python: Use when editing Python code.", system_instructions)
         self.assertNotIn("Full skill body should not be in startup context.", system_instructions)
+        self.assertIn("Target workspace:", system_instructions)
+        self.assertIn(str(root.resolve()), system_instructions)
+
+    def test_coding_agent_system_prompt_includes_workspace_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            agent = CodingAgent(
+                AgentConfig(
+                    workspace_path=root,
+                    provider="offline",
+                    session_root=Path(tmp) / "sessions",
+                    skills_path=Path(tmp) / "skills",
+                )
+            )
+
+            self.assertIn("Target workspace:", agent.system_instructions)
+            self.assertIn(str(root.resolve()), agent.system_instructions)
 
 
 if __name__ == "__main__":

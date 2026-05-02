@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib.resources import files
+from pathlib import Path
 
 from code_agent.skills import SkillRegistry
 from code_agent.tools import ToolRegistry
@@ -13,17 +14,20 @@ def build_system_instructions(
     *,
     tool_registry: ToolRegistry,
     skill_registry: SkillRegistry,
+    workspace_root: Path | None = None,
     base_instructions: str = BASE_SYSTEM_INSTRUCTIONS,
 ) -> str:
     """将静态系统规则与启动时发现的工具、skill 元数据合成最终 instructions。"""
 
-    return "\n\n".join(
-        [
-            base_instructions.strip(),
-            _render_tools(tool_registry),
-            _render_skills(skill_registry),
-        ]
-    )
+    sections = [base_instructions.strip()]
+    if workspace_root is not None:
+        sections.append(_render_workspace(workspace_root))
+    sections.extend([_render_tools(tool_registry), _render_skills(skill_registry)])
+    return "\n\n".join(sections)
+
+
+def _render_workspace(workspace_root: Path) -> str:
+    return f"Target workspace:\n{workspace_root.expanduser().resolve()}"
 
 
 def _render_tools(tool_registry: ToolRegistry) -> str:

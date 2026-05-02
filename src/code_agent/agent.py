@@ -37,6 +37,7 @@ class CodingAgent:
         self.system_instructions = build_system_instructions(
             tool_registry=self.tool_registry,
             skill_registry=self.skill_registry,
+            workspace_root=config.workspace_root,
         )
         self.conversation = ConversationSession(
             workspace_root=config.workspace_root,
