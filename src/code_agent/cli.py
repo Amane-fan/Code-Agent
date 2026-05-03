@@ -27,12 +27,12 @@ SLASH_COMMANDS = sorted([*EXIT_COMMANDS, COMPACT_COMMAND, CLEAR_COMMAND, MEMORY_
 app = typer.Typer(
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
-    help="Interactive AI coding agent for a single workspace.",
+    help="针对单一 workspace 的交互式 AI 编程 Agent。",
 )
 
 
 class TerminalRenderer:
-    """Render agent events and CLI status messages with Rich."""
+    """用 Rich 渲染 Agent 事件和 CLI 状态消息。"""
 
     def __init__(self, console: Console) -> None:
         self.console = console
@@ -122,25 +122,25 @@ def _main_command(
         Path,
         typer.Option(
             "--workspace",
-            help="Workspace path the agent may inspect and modify.",
+            help="Agent 可检查和修改的 workspace 路径。",
         ),
     ],
     provider: Annotated[
         str,
         typer.Option(
             "--provider",
-            help="Model provider.",
+            help="模型提供方。",
         ),
     ] = DEFAULT_PROVIDER,
     no_session: Annotated[
         bool,
         typer.Option(
             "--no-session",
-            help="Do not write session logs.",
+            help="不写入会话日志。",
         ),
     ] = False,
 ) -> int:
-    """Interactive AI coding agent for a single workspace."""
+    """针对单一 workspace 的交互式 AI 编程 Agent。"""
 
     if provider not in {"offline", "openai"}:
         raise typer.BadParameter("provider must be one of: offline, openai")

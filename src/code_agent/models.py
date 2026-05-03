@@ -46,7 +46,7 @@ RepoContext = WorkspaceContext
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """One model response's token counts when the provider reports them."""
+    """单次模型响应的 token 数量，由 provider 上报时填充。"""
 
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -55,7 +55,7 @@ class TokenUsage:
 
 @dataclass(frozen=True)
 class ModelCompletion:
-    """Provider response text plus optional usage metadata."""
+    """Provider 响应文本，附带可选的 token usage 元数据。"""
 
     text: str
     usage: TokenUsage | None = None
@@ -63,7 +63,7 @@ class ModelCompletion:
 
 @dataclass(frozen=True)
 class ModelCallUsage:
-    """Audit record for one model provider call."""
+    """一次模型提供方调用的审计记录。"""
 
     provider: str
     model: str

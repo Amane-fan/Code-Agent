@@ -13,7 +13,7 @@ from code_agent.tools.base import JsonSchema, Tool, required_str
 
 @dataclass(frozen=True)
 class ShellTool:
-    """Shell command runner protected by explicit user approval."""
+    """受用户显式确认保护的 shell 命令执行器。"""
 
     workspace_root: Path
 

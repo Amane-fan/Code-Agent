@@ -1,1 +1,1 @@
-"""Prompt resources bundled with Code-Agent."""
+"""Code-Agent 内建的 prompt 资源。"""

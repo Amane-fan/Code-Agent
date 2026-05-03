@@ -12,7 +12,7 @@ from prompt_toolkit.history import InMemoryHistory
 
 
 class SlashCommandCompleter(Completer):
-    """Complete built-in slash commands at the start of a prompt."""
+    """在输入开头补全内置斜杠命令。"""
 
     def __init__(self, commands: list[str]) -> None:
         self.commands = commands
@@ -30,7 +30,7 @@ _PROMPT_SESSION: PromptSession[str] | None = None
 
 
 def enable_line_editing() -> None:
-    """Enable readline-backed editing when the platform provides it."""
+    """当平台支持时，启用基于 readline 的行编辑。"""
 
     try:
         import readline  # noqa: F401
@@ -39,7 +39,7 @@ def enable_line_editing() -> None:
 
 
 def read_prompt(prompt: str, *, commands: list[str] | None = None) -> str:
-    """Read one enhanced terminal prompt with history and slash command completion."""
+    """读取一行增强型终端输入，支持历史记录和斜杠命令补全。"""
 
     global _PROMPT_SESSION
     if _PROMPT_SESSION is None:
@@ -54,7 +54,7 @@ def read_prompt(prompt: str, *, commands: list[str] | None = None) -> str:
 
 @contextmanager
 def preserve_stdin_terminal() -> Iterator[None]:
-    """Restore stdin terminal settings after code that may change them."""
+    """在可能修改 stdin 终端设置的代码执行后恢复原设置。"""
 
     attrs: Any | None = None
     fd: int | None = None

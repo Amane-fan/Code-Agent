@@ -44,7 +44,7 @@ def select_skills(
     history: Sequence[AgentEvent],
     skill_registry: SkillRegistry,
 ) -> SkillSelectionResult:
-    """Ask a model to select relevant skills without reading workspace files."""
+    """让模型选择相关 skill，此调用不读取 workspace 文件。"""
 
     try:
         response = provider.complete(

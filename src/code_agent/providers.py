@@ -129,7 +129,7 @@ def _extract_langchain_message_text(message: object) -> str:
 
 
 def _extract_langchain_token_usage(message: object) -> TokenUsage | None:
-    """Extract token usage from common LangChain AIMessage metadata shapes."""
+    """从 LangChain AIMessage 常见元数据格式中提取 token usage。"""
 
     usage_metadata = _object_value(message, "usage_metadata")
     usage = _usage_from_mapping_or_object(

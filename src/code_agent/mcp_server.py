@@ -27,7 +27,7 @@ code_agent_mcp = FastMCP(
     ),
 )
 def code_agent_echo(message: str) -> dict[str, object]:
-    """Return the input message and its character count."""
+    """返回输入消息及其字符数。"""
 
     return {"message": message, "characters": len(message)}
 
@@ -43,7 +43,7 @@ def code_agent_echo(message: str) -> dict[str, object]:
     ),
 )
 def code_agent_add(a: int, b: int) -> dict[str, object]:
-    """Add two integers and return a structured result."""
+    """将两个整数相加并返回结构化结果。"""
 
     return {"a": a, "b": b, "result": a + b}
 
@@ -59,7 +59,7 @@ def code_agent_add(a: int, b: int) -> dict[str, object]:
     ),
 )
 def code_agent_word_count(text: str) -> dict[str, object]:
-    """Count characters, lines, and whitespace-delimited words in text."""
+    """统计文本中的字符数、行数和空白分隔的单词数。"""
 
     return {
         "characters": len(text),
@@ -71,10 +71,10 @@ def code_agent_word_count(text: str) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="code-agent-mcp-server",
-        description="Run the standalone Code Agent MCP example server over legacy SSE.",
+        description="通过 legacy SSE 运行独立的 Code Agent MCP 示例服务。",
     )
-    parser.add_argument("--host", default=DEFAULT_HOST, help="Host to bind.")
-    parser.add_argument("--port", default=DEFAULT_PORT, type=int, help="Port to bind.")
+    parser.add_argument("--host", default=DEFAULT_HOST, help="绑定的主机地址。")
+    parser.add_argument("--port", default=DEFAULT_PORT, type=int, help="绑定的端口号。")
     args = parser.parse_args(argv)
 
     code_agent_mcp.settings.host = args.host

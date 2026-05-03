@@ -20,7 +20,7 @@ _TOOL_CLASSES: list[ToolClass] = []
 
 @dataclass(frozen=True)
 class ToolContext:
-    """Runtime dependencies shared by workspace-bound tools."""
+    """workspace 绑定工具共享的运行时依赖。"""
 
     workspace_root: Path
     skill_registry: SkillRegistry | None = None
@@ -29,7 +29,7 @@ class ToolContext:
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """Tool metadata rendered into model instructions."""
+    """渲染到模型 instructions 中的工具元数据。"""
 
     name: str
     description: str
@@ -46,7 +46,7 @@ class ToolSpec:
 
 
 class Tool(ABC):
-    """Base class for every model-callable local tool."""
+    """所有可被模型调用的本地工具的基类。"""
 
     name: ClassVar[str]
     description: ClassVar[str]
@@ -77,11 +77,11 @@ class Tool(ABC):
 
     @abstractmethod
     def run(self, args: dict[str, Any]) -> ToolResult:
-        """Execute the tool with model-provided arguments."""
+        """使用模型提供的参数执行工具。"""
 
 
 class ToolRegistry:
-    """Dispatch tool calls by name and expose startup-rendered tool metadata."""
+    """按名称分发工具调用，并暴露启动时渲染的工具元数据。"""
 
     def __init__(self, tools: Sequence[Tool]) -> None:
         by_name: dict[str, Tool] = {}
@@ -111,7 +111,7 @@ class ToolRegistry:
 
 
 def discover_tool_classes(package_name: str = "code_agent.tools") -> list[ToolClass]:
-    """Import package modules and return package-local Tool subclasses."""
+    """导入工具包模块，返回包内的 Tool 子类。"""
 
     _import_tool_modules(package_name)
     discovered: dict[str, ToolClass] = {}
@@ -128,7 +128,7 @@ def create_workspace_tool_registry(
     skill_registry: SkillRegistry | None = None,
     shell_approval: ShellApproval | None = None,
 ) -> ToolRegistry:
-    """Create the default auto-discovered registry for one workspace."""
+    """为单个 workspace 创建默认的自动发现工具注册表。"""
 
     context = ToolContext(
         workspace_root=workspace_root,

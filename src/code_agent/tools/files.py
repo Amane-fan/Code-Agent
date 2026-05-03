@@ -39,7 +39,7 @@ FILE_RESULT_SCHEMA: JsonSchema = {
 
 @dataclass(frozen=True)
 class FileTools:
-    """Workspace file operations guarded by path and sensitivity checks."""
+    """受路径和安全检查保护的 workspace 文件操作。"""
 
     workspace_root: Path
 
