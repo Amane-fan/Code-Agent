@@ -198,3 +198,4 @@ chore: upgrade langgraph to 1.2
 7. **Do not hardcode values**: All configurable values, such as API URLs, model names, and paths, should come from environment variables or reasonable defaults.
 8. **Do not commit sensitive files**: `.env`, `.code-agent/`, and session logs must not be committed to version control.
 9. **Do not run destructive commands**: Commands such as `rm -rf`, `git reset --hard`, and `git push --force` must not be executed unless the user explicitly requests and confirms them.
+10. **Do not look at the contents of TODO.md.**
