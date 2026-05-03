@@ -52,22 +52,6 @@ MODEL=deepseek-v4-flash
 uv run python -m code_agent --workspace /path/to/target-project
 ```
 
-### Testing and Checks
-
-```bash
-# Run tests
-uv run pytest
-
-# Lint check
-uv run ruff check .
-
-# Type check, strict mode
-uv run mypy src
-
-# Format
-uv run ruff format .
-```
-
 ---
 
 ## Technology Stack
@@ -105,10 +89,6 @@ uv run ruff format .
 
 For agent orchestration logic involving **multi-step decision loops, conditional branches, tool routing, and state management**, prefer implementing it with `langgraph`.
 
-### Tool Loop Protocol
-
-Each model turn must return either `<summary>` + `<action>` for tool calls, or `<summary>` + `<final_answer>` for the final response. Tool call results are added back into history as `<observation>` and participate in the next model call. This protocol must remain unchanged.
-
 ### Skill Selection Flow
 
 Before each task turn, run skill selection first as an independent model call. Select up to 3 relevant skills. The complete `SKILL.md` files of selected skills are injected into the main task system instructions. If selection fails, skip it and continue with the main task.
@@ -119,23 +99,12 @@ Before each task turn, run skill selection first as an independent model call. S
 
 ### English Comments
 
-Comments in code should be written in **English** and follow these principles:
+Comments in code should be written in **Chinese** and follow these principles:
 
 - **Comments are required for**: non-obvious logic, implicit constraints, workarounds, easily misunderstood behavior, and security-related decisions.
 - **Comments are optional for**: routine code where names already express intent, getters/setters, and standard-pattern calls.
 - Comment style: use single-line `#` comments and avoid overly long multi-line docstrings.
 - Comments should explain **WHY**, not **WHAT**. The code itself should explain what it does.
-
-```python
-# Correct: explains why this is done
-# The target workspace's .env may contain malicious variables, so it must be cleared
-# from the environment before starting the shell.
-os.environ.pop("ENV_FILE", None)
-
-# Incorrect: repeats what the code already says
-# Delete ENV_FILE from environment variables
-os.environ.pop("ENV_FILE", None)
-```
 
 ### Python Coding Standards
 
@@ -168,16 +137,6 @@ Use the concise `<type>: <description>` format. Prefer English for the descripti
 | `docs`     | Documentation changes                                      |
 | `test`     | Test-related changes                                       |
 | `chore`    | Miscellaneous changes, such as build or dependency updates |
-
-### Examples
-
-```text
-feat: add reference reading support
-fix: update system prompt
-optimize: refactor tools module structure
-docs: update architecture documentation
-chore: upgrade langgraph to 1.2
-```
 
 ### Rules
 
