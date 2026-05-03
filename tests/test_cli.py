@@ -1,29 +1,61 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import ANY, patch
+from typing import Sequence
+from unittest.mock import patch
+
+from langchain_core.messages import BaseMessage
+from langchain_core.tools import BaseTool
 
 from code_agent.cli import main
-from code_agent.models import ModelCompletion, TokenUsage, WorkspaceContext
+from code_agent.models import ModelCompletion, ModelToolCall, TokenUsage
+
+
+def _final(content: str) -> str:
+    return json.dumps(
+        {"role": "assistant", "type": "final_answer", "content": content},
+        ensure_ascii=False,
+    )
+
+
+def _summary(content: str) -> str:
+    return json.dumps(
+        {"role": "assistant", "type": "summary", "content": content},
+        ensure_ascii=False,
+    )
 
 
 class FakeProvider:
     name = "fake"
 
     def __init__(self, responses: list[str | ModelCompletion] | None = None) -> None:
-        self.responses = responses or ["<summary>完成。</summary>\n<final_answer>default provider response</final_answer>"]
-        self.prompts: list[str] = []
+        self.responses = responses or [_final("default provider response")]
+        self.message_batches: list[list[BaseMessage]] = []
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
-        self.prompts.append(prompt)
+    def complete(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        model: str,
+        tools: Sequence[BaseTool] | None = None,
+    ) -> ModelCompletion:
+        self.message_batches.append(list(messages))
         if not self.responses:
             raise AssertionError("provider called too many times")
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, ModelCompletion):
+            return response
+        return ModelCompletion(text=response)
+
+    @property
+    def prompts(self) -> list[str]:
+        return ["\n".join(str(message.content) for message in batch) for batch in self.message_batches]
 
 
 def _init_repo(root: Path) -> None:
@@ -59,9 +91,7 @@ class CliTests(unittest.TestCase):
             root = Path(tmp)
             (root / "README.md").write_text("# Demo\n", encoding="utf-8")
             stdout = StringIO()
-            provider = FakeProvider(
-                ['{"skills":[]}', "<summary>完成。</summary>\n<final_answer>default provider response</final_answer>"]
-            )
+            provider = FakeProvider(['{"skills":[]}', _final("default provider response")])
             with (
                 patch("code_agent.cli._read_input", side_effect=["总结项目", "/quit"]),
                 patch("code_agent.agent.make_provider", return_value=provider) as make_provider,
@@ -71,24 +101,17 @@ class CliTests(unittest.TestCase):
                 exit_code = main(["--workspace", str(root), "--no-session"])
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(make_provider.call_count, 2)
-            make_provider.assert_any_call("openai", system_instructions=ANY)
+            self.assertEqual(make_provider.call_count, 1)
+            make_provider.assert_called_once_with("openai")
             self.assertIn("default provider response", stdout.getvalue())
             self.assertIn("Task", stdout.getvalue())
             self.assertIn("总结项目", stdout.getvalue())
-            self.assertIn("Summary", stdout.getvalue())
             self.assertIn("Final Answer", stdout.getvalue())
 
     def test_interactive_reuses_memory_until_clear_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            provider = FakeProvider(
-                [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
-                ]
-            )
+            provider = FakeProvider([_final("first answer"), _final("second answer"), _final("third answer")])
 
             with (
                 patch(
@@ -102,7 +125,7 @@ class CliTests(unittest.TestCase):
                 exit_code = main(["--workspace", str(root), "--provider", "offline", "--no-session"])
 
             self.assertEqual(exit_code, 0)
-            self.assertIn("<final_answer>first answer</final_answer>", provider.prompts[1])
+            self.assertIn('"content": "first answer"', provider.prompts[1])
             self.assertNotIn("first task", provider.prompts[2])
             self.assertNotIn("second task", provider.prompts[2])
 
@@ -111,10 +134,10 @@ class CliTests(unittest.TestCase):
             root = Path(tmp)
             provider = FakeProvider(
                 [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
-                    "<summary>压缩完成。</summary>\n<final_answer>remembered first</final_answer>",
+                    _final("first answer"),
+                    _final("second answer"),
+                    _final("third answer"),
+                    _final("remembered first"),
                 ]
             )
             stdout = StringIO()
@@ -122,7 +145,14 @@ class CliTests(unittest.TestCase):
             with (
                 patch(
                     "code_agent.cli._read_input",
-                    side_effect=["first task", "second task", "third task", "/compact", "/memory", "/quit"],
+                    side_effect=[
+                        "first task",
+                        "second task",
+                        "third task",
+                        "/compact",
+                        "/memory",
+                        "/quit",
+                    ],
                 ),
                 patch("code_agent.agent.make_provider", return_value=provider),
                 redirect_stdout(stdout),
@@ -140,12 +170,8 @@ class CliTests(unittest.TestCase):
             provider = FakeProvider(
                 [
                     ModelCompletion(
-                        text="<summary>完成。</summary>\n<final_answer>answer</final_answer>",
-                        usage=TokenUsage(
-                            prompt_tokens=8,
-                            completion_tokens=3,
-                            total_tokens=11,
-                        ),
+                        text=_final("answer"),
+                        usage=TokenUsage(prompt_tokens=8, completion_tokens=3, total_tokens=11),
                     )
                 ]
             )
@@ -168,9 +194,17 @@ class CliTests(unittest.TestCase):
             root = Path(tmp)
             provider = FakeProvider(
                 [
-                    '<summary>需要运行命令。</summary>\n'
-                    '<action>{"tool":"run_shell","args":{"command":"printf hello > out.txt"}}</action>',
-                    "<summary>命令被拒绝，停止。</summary>\n<final_answer>not run</final_answer>",
+                    ModelCompletion(
+                        text=_summary("需要运行命令。"),
+                        tool_calls=[
+                            ModelToolCall(
+                                id="call_shell",
+                                name="run_shell",
+                                args={"command": "printf hello > out.txt"},
+                            )
+                        ],
+                    ),
+                    _final("not run"),
                 ]
             )
 
@@ -185,7 +219,7 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertFalse((root / "out.txt").exists())
-            self.assertIn("Action", stdout.getvalue())
+            self.assertIn("Tool Call", stdout.getvalue())
             self.assertIn("command requires user approval", stdout.getvalue())
             self.assertIn("Final Answer", stdout.getvalue())
             self.assertIn("not run", stdout.getvalue())
@@ -195,9 +229,17 @@ class CliTests(unittest.TestCase):
             root = Path(tmp)
             provider = FakeProvider(
                 [
-                    '<summary>需要运行命令。</summary>\n'
-                    '<action>{"tool":"run_shell","args":{"command":"printf hello > out.txt"}}</action>',
-                    "<summary>命令完成。</summary>\n<final_answer>ran</final_answer>",
+                    ModelCompletion(
+                        text=_summary("需要运行命令。"),
+                        tool_calls=[
+                            ModelToolCall(
+                                id="call_shell",
+                                name="run_shell",
+                                args={"command": "printf hello > out.txt"},
+                            )
+                        ],
+                    ),
+                    _final("ran"),
                 ]
             )
 

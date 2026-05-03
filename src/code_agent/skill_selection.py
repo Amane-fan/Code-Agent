@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from html import escape
 from typing import Protocol, Sequence
 
-from code_agent.models import AgentEvent, ModelCallUsage, ModelCompletion, WorkspaceContext
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.prompts import PromptTemplate
+from langchain_core.tools import BaseTool
+
+from code_agent.models import AgentEvent, ModelCallUsage, ModelCompletion
 from code_agent.skills import LoadedSkill, SkillRegistry
 
 
@@ -19,13 +22,30 @@ SKILL_SELECTOR_SYSTEM_INSTRUCTIONS = (
     "most three skills, and return an empty list when no listed skill is relevant."
 )
 
+SKILL_SELECTION_PROMPT_TEMPLATE = PromptTemplate.from_template(
+    "Select installed skills for the current task.\n\n"
+    "Available skills JSON:\n"
+    "{skills_json}\n\n"
+    "Current window memory and recent complete turns as JSONL:\n"
+    "{history_jsonl}\n\n"
+    "Current user task:\n"
+    "{user_prompt}\n\n"
+    'Return exactly: {{"skills":["skill_name"]}}'
+)
+
 
 class SkillSelectionProvider(Protocol):
     @property
     def name(self) -> str:
         ...
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
+    def complete(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        model: str,
+        tools: Sequence[BaseTool] | None = None,
+    ) -> ModelCompletion:
         ...
 
 
@@ -39,7 +59,6 @@ def select_skills(
     *,
     provider: SkillSelectionProvider,
     model: str,
-    workspace_context: WorkspaceContext,
     user_prompt: str,
     history: Sequence[AgentEvent],
     skill_registry: SkillRegistry,
@@ -48,12 +67,11 @@ def select_skills(
 
     try:
         response = provider.complete(
-            _selection_prompt(
+            _selection_messages(
                 user_prompt=user_prompt,
                 history=history,
                 skill_registry=skill_registry,
             ),
-            workspace_context,
             model=model,
         )
     except Exception as exc:
@@ -71,7 +89,7 @@ def select_skills(
             ],
         )
 
-    completion = _normalize_completion(response)
+    completion = response if isinstance(response, ModelCompletion) else ModelCompletion(text=str(response))
     names, error, ok = _parse_selected_skill_names(completion.text, skill_registry)
     loaded_skills = [skill_registry.load(name) for name in names]
     return SkillSelectionResult(
@@ -90,34 +108,31 @@ def select_skills(
     )
 
 
-def _selection_prompt(
+def _selection_messages(
     *,
     user_prompt: str,
     history: Sequence[AgentEvent],
     skill_registry: SkillRegistry,
-) -> str:
+) -> list[BaseMessage]:
     skills = [
         {"name": item.name, "description": item.description}
         for item in skill_registry.list_metadata()
     ]
-    return (
-        "Select installed skills for the current task.\n\n"
-        "Available skills JSON:\n"
-        f"{json.dumps(skills, ensure_ascii=False, sort_keys=True)}\n\n"
-        "Current window memory and recent complete turns:\n"
-        "<conversation_context>\n"
-        f"{_render_history(history)}\n"
-        "</conversation_context>\n\n"
-        "Current user task:\n"
-        f"<task>{escape(user_prompt)}</task>\n\n"
-        'Return exactly: {"skills":["skill_name"]}'
+    prompt = SKILL_SELECTION_PROMPT_TEMPLATE.format(
+        skills_json=json.dumps(skills, ensure_ascii=False, sort_keys=True),
+        history_jsonl=_render_history(history),
+        user_prompt=user_prompt,
     )
+    return [
+        SystemMessage(content=SKILL_SELECTOR_SYSTEM_INSTRUCTIONS),
+        HumanMessage(content=prompt),
+    ]
 
 
 def _render_history(history: Sequence[AgentEvent]) -> str:
     if not history:
         return ""
-    return "\n".join(event.tag for event in history)
+    return "\n".join(event.to_json_line() for event in history)
 
 
 def _parse_selected_skill_names(
@@ -157,9 +172,3 @@ def _parse_selected_skill_names(
         notes.append(f"ignored unknown skills: {', '.join(sorted(set(ignored_unknown)))}")
 
     return selected, "; ".join(notes), True
-
-
-def _normalize_completion(response: str | ModelCompletion) -> ModelCompletion:
-    if isinstance(response, ModelCompletion):
-        return response
-    return ModelCompletion(text=response)

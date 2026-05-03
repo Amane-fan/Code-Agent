@@ -5,55 +5,67 @@ import termios
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
+from langchain_core.tools import BaseTool, tool
+
 from code_agent.models import ToolResult
-from code_agent.tools import FileTools, ShellTool, Tool, ToolContext, ToolRegistry
+from code_agent.tools import FileTools, ShellTool, ToolContext, ToolRegistry
 
 
 class ToolTests(unittest.TestCase):
-    def test_tool_registry_executes_tool_subclasses_and_rejects_duplicates(self) -> None:
-        class EchoTool(Tool):
-            name = "echo"
-            description = "Echo a message."
-            parameters_schema = {
-                "type": "object",
-                "properties": {"message": {"type": "string"}},
-                "required": ["message"],
-                "additionalProperties": False,
-            }
-            returns_schema = {
-                "type": "object",
-                "properties": {"output": {"type": "string"}},
-            }
+    def test_tool_registry_executes_base_tools_and_rejects_duplicates(self) -> None:
+        @tool("echo")
+        def echo(message: str) -> ToolResult:
+            """Echo a message."""
 
-            def run(self, args: dict[str, Any]) -> ToolResult:
-                return ToolResult(self.name, True, output=str(args["message"]))
+            return ToolResult("echo", True, output=message)
 
-        class DuplicateEchoTool(EchoTool):
-            pass
+        @tool("echo")
+        def duplicate_echo(message: str) -> ToolResult:
+            """Echo a message again."""
 
-        context = ToolContext(workspace_root=Path.cwd())
-        registry = ToolRegistry([EchoTool(context)])
+            return ToolResult("echo", True, output=message)
+
+        registry = ToolRegistry([echo])
 
         result = registry.execute("echo", {"message": "hello"})
 
+        self.assertIsInstance(echo, BaseTool)
         self.assertTrue(result.ok)
         self.assertEqual(result.output, "hello")
         with self.assertRaisesRegex(ValueError, "duplicate tool name: echo"):
-            ToolRegistry([EchoTool(context), DuplicateEchoTool(context)])
+            ToolRegistry([echo, duplicate_echo])
 
-    def test_workspace_registry_exposes_json_schemas_for_default_tools(self) -> None:
+    def test_workspace_registry_exposes_base_tool_schemas_for_default_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             registry = ToolRegistry.default(ToolContext(workspace_root=Path(tmp)))
 
+            tools = {tool.name: tool for tool in registry.tools}
             specs = {spec.name: spec for spec in registry.specs}
 
+        self.assertIsInstance(tools["read_file"], BaseTool)
         self.assertIn("read_file", specs)
         self.assertEqual(specs["read_file"].parameters_schema["type"], "object")
-        self.assertIn("path", specs["read_file"].parameters_schema["required"])
+        self.assertIn("path", specs["read_file"].parameters_schema["properties"])
         self.assertEqual(specs["read_file"].returns_schema["type"], "object")
+
+    def test_tool_registry_normalizes_dict_and_unknown_results(self) -> None:
+        @tool("dict_tool")
+        def dict_tool() -> dict[str, object]:
+            """Return a dict result."""
+
+            return {"name": "dict_tool", "ok": True, "output": "ok", "metadata": {"x": 1}}
+
+        registry = ToolRegistry([dict_tool])
+
+        known = registry.execute("dict_tool", {})
+        unknown = registry.execute("missing", {})
+
+        self.assertTrue(known.ok)
+        self.assertEqual(known.metadata, {"x": 1})
+        self.assertFalse(unknown.ok)
+        self.assertIn("unknown tool", unknown.error)
 
     def test_file_tools_refuse_sensitive_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,10 +114,10 @@ class ToolTests(unittest.TestCase):
     def test_shell_tool_requires_approval_and_runs_via_shell(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            tool = ShellTool(root)
+            tool_runner = ShellTool(root)
 
-            denied = tool.run("printf hello > out.txt", approved=False)
-            allowed = tool.run("printf hello > out.txt", approved=True)
+            denied = tool_runner.run("printf hello > out.txt", approved=False)
+            allowed = tool_runner.run("printf hello > out.txt", approved=True)
 
             self.assertFalse(denied.ok)
             self.assertIn("approval", denied.error)

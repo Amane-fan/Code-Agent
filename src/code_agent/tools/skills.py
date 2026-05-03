@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+
+from langchain_core.tools import BaseTool, tool
 
 from code_agent.models import ToolResult
 from code_agent.security import redact_secrets
 from code_agent.skills import SkillRegistry
-from code_agent.tools.base import JsonSchema, Tool, required_str
+from code_agent.tools.base import ToolContext
 
 
 MAX_RESOURCE_FILE_BYTES = 24_000
@@ -21,60 +22,18 @@ class _ResolvedResource:
     path: Path
 
 
-class LoadSkillResourcesTool(Tool):
-    name = "load_skill_resources"
-    description = (
-        "Load UTF-8 supporting resource files from references/ or resources/ under an "
-        "installed skill."
-    )
-    parameters_schema: ClassVar[JsonSchema] = {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "Installed skill name."},
-            "paths": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Skill-relative paths under references/ or resources/, such as "
-                    "references/guide.md."
-                ),
-            },
-        },
-        "required": ["name", "paths"],
-        "additionalProperties": False,
-    }
-    returns_schema: ClassVar[JsonSchema] = {
-        "type": "object",
-        "description": (
-            "Returns requested resource text in order, with a title before each file. On any "
-            "failure, ok is false and no partial output is returned."
-        ),
-        "properties": {
-            "output": {
-                "type": "string",
-                "description": "Secret-redacted UTF-8 resource contents with file titles.",
-            },
-            "error": {"type": "string", "description": "Failure reason."},
-            "metadata": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "paths": {"type": "array", "items": {"type": "string"}},
-                    "available_skills": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-        },
-    }
+def create_tools(context: ToolContext) -> list[BaseTool]:
+    skills = context.skill_registry or SkillRegistry.empty()
 
-    def run(self, args: dict[str, Any]) -> ToolResult:
-        name = required_str(self.name, args, "name")
-        paths = _required_str_list(self.name, args, "paths")
-        skills = self.context.skill_registry or SkillRegistry.empty()
+    @tool("load_skill_resources")
+    def load_skill_resources(name: str, paths: list[str]) -> ToolResult:
+        """Load UTF-8 supporting resource files for a skill selected in this task."""
+
         try:
             loaded = skills.load(name)
         except KeyError:
             return ToolResult(
-                self.name,
+                "load_skill_resources",
                 False,
                 error=f"unknown skill: {name}",
                 metadata={"available_skills": skills.names()},
@@ -82,25 +41,30 @@ class LoadSkillResourcesTool(Tool):
 
         resolved, error = _resolve_resources(loaded.path.parent, paths)
         if error:
-            return ToolResult(self.name, False, error=error, metadata={"name": name, "paths": paths})
+            return ToolResult(
+                "load_skill_resources",
+                False,
+                error=error,
+                metadata={"name": name, "paths": paths},
+            )
 
         output, error = _read_resources(resolved)
         if error:
-            return ToolResult(self.name, False, error=error, metadata={"name": name, "paths": paths})
+            return ToolResult(
+                "load_skill_resources",
+                False,
+                error=error,
+                metadata={"name": name, "paths": paths},
+            )
 
         return ToolResult(
-            self.name,
+            "load_skill_resources",
             True,
             output=output,
             metadata={"name": loaded.metadata.name, "paths": paths},
         )
 
-
-def _required_str_list(tool: str, args: dict[str, Any], name: str) -> list[str]:
-    value = args.get(name)
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError(f"{tool}.{name} must be a list of strings")
-    return value
+    return [load_skill_resources]
 
 
 def _resolve_resources(skill_root: Path, paths: list[str]) -> tuple[list[_ResolvedResource], str]:

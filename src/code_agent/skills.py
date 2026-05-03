@@ -33,6 +33,10 @@ class SkillRegistry:
         return cls({})
 
     @classmethod
+    def from_loaded(cls, loaded_skills: list[LoadedSkill]) -> SkillRegistry:
+        return cls({skill.metadata.name: skill for skill in loaded_skills})
+
+    @classmethod
     def from_directory(cls, root: Path | None) -> SkillRegistry:
         if root is None:
             return cls.empty()

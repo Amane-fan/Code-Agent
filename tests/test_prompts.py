@@ -12,32 +12,20 @@ from code_agent.tools import create_workspace_tool_registry
 
 
 class PromptTests(unittest.TestCase):
-    def test_system_prompt_keeps_protocol_examples(self) -> None:
-        self.assertIn("你是一个谨慎的终端编程代理。", BASE_SYSTEM_INSTRUCTIONS)
-        self.assertRegex(
-            BASE_SYSTEM_INSTRUCTIONS,
-            r"<summary>\s*读取 README\.md 以检查项目概览。\s*</summary>",
-        )
-        self.assertRegex(
-            BASE_SYSTEM_INSTRUCTIONS,
-            r"<action>\s*\{\"tool\":\"read_file\",\"args\":\{\"path\":\"README\.md\"\}\}\s*</action>",
-        )
-        self.assertRegex(
-            BASE_SYSTEM_INSTRUCTIONS,
-            r"<summary>\s*请求的更改已完成并通过验证。\s*</summary>",
-        )
-        self.assertRegex(
-            BASE_SYSTEM_INSTRUCTIONS,
-            r"<final_answer>\s*已更新工具文档并运行相关测试。\s*</final_answer>",
-        )
-        old_summary_tag = "<" + "th" + "ink" + ">"
-        self.assertNotIn(old_summary_tag, BASE_SYSTEM_INSTRUCTIONS)
+    def test_base_system_prompt_uses_json_event_protocol_not_xml(self) -> None:
+        self.assertIn("You are a cautious terminal programming agent.", BASE_SYSTEM_INSTRUCTIONS)
+        self.assertIn('"type": "final_answer"', BASE_SYSTEM_INSTRUCTIONS)
+        self.assertIn('"type": "summary"', BASE_SYSTEM_INSTRUCTIONS)
+        self.assertIn("native tool-calling interface", BASE_SYSTEM_INSTRUCTIONS)
+        self.assertNotIn("<action>", BASE_SYSTEM_INSTRUCTIONS)
+        self.assertNotIn("<final_answer>", BASE_SYSTEM_INSTRUCTIONS)
+        self.assertNotIn("<summary>", BASE_SYSTEM_INSTRUCTIONS)
 
     def test_base_system_prompt_does_not_hardcode_tool_catalog(self) -> None:
-        self.assertNotIn("Available tools:", BASE_SYSTEM_INSTRUCTIONS)
         self.assertNotIn("- write_file:", BASE_SYSTEM_INSTRUCTIONS)
+        self.assertIn("Available bound tools for this run:", BASE_SYSTEM_INSTRUCTIONS)
 
-    def test_dynamic_system_prompt_documents_tools_and_skill_metadata_without_skill_body(self) -> None:
+    def test_dynamic_system_prompt_replaces_placeholders_and_documents_json_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
@@ -53,7 +41,7 @@ class PromptTests(unittest.TestCase):
                 encoding="utf-8",
             )
             skill_registry = SkillRegistry.from_directory(skills_root)
-            tool_registry = create_workspace_tool_registry(root, skill_registry=skill_registry)
+            tool_registry = create_workspace_tool_registry(root, skill_registry=SkillRegistry.empty())
 
             system_instructions = build_system_instructions(
                 tool_registry=tool_registry,
@@ -61,43 +49,33 @@ class PromptTests(unittest.TestCase):
                 workspace_root=root,
             )
 
-        for field in ["name", "ok", "output", "error", "metadata"]:
+        for placeholder in [
+            "{workspace_root}",
+            "{skill_catalog}",
+            "{loaded_skills}",
+            "{event_schema}",
+        ]:
+            self.assertNotIn(placeholder, system_instructions)
+        for field in ["role", "type", "content", "final_answer"]:
             self.assertIn(field, system_instructions)
 
-        expected_tool_details = {
-            "read_file": ['"path"', '"required":["path"]', "redacted file contents"],
-            "write_file": ['"content"', '"required":["path","content"]', "written path and byte count"],
-            "edit_file": [
-                '"old_text"',
-                '"new_text"',
-                "old_text must match exactly once",
-            ],
-            "list_files": ["{}", "newline-separated relative paths"],
-            "grep_search": ['"pattern"', "path:line: text"],
-            "run_shell": ['"command"', "stdout/stderr"],
-            "load_skill_resources": ['"paths"', "supporting resource files"],
-        }
-        for tool, details in expected_tool_details.items():
+        for tool in [
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "grep_search",
+            "run_shell",
+            "load_skill_resources",
+        ]:
             self.assertIn(tool, system_instructions)
-            for detail in details:
-                self.assertIn(detail, system_instructions)
 
-        self.assertNotIn("- load_skill:", system_instructions)
-        self.assertNotIn('call load_skill with {"name":"skill_name"}', system_instructions)
-        self.assertIn("<skills>", system_instructions)
-        self.assertIn(
-            "<skill>\n"
-            "  <name>python</name>\n"
-            "  <description>Use when editing Python code.</description>\n"
-            "</skill>",
-            system_instructions,
-        )
-        self.assertIn("</skills>", system_instructions)
-        self.assertNotIn("- python: Use when editing Python code.", system_instructions)
+        self.assertIn('"name": "python"', system_instructions)
+        self.assertIn('"description": "Use when editing Python code."', system_instructions)
         self.assertNotIn("Full skill body should not be in startup context.", system_instructions)
-        self.assertIn("<loaded_skills>", system_instructions)
-        self.assertIn("Target workspace:", system_instructions)
         self.assertIn(str(root.resolve()), system_instructions)
+        self.assertNotIn("<loaded_skills>", system_instructions)
+        self.assertNotIn("<skills>", system_instructions)
 
     def test_dynamic_system_prompt_injects_selected_skill_body(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -115,7 +93,10 @@ class PromptTests(unittest.TestCase):
                 encoding="utf-8",
             )
             skill_registry = SkillRegistry.from_directory(skills_root)
-            tool_registry = create_workspace_tool_registry(root, skill_registry=skill_registry)
+            tool_registry = create_workspace_tool_registry(
+                root,
+                skill_registry=SkillRegistry.from_loaded([skill_registry.load("python")]),
+            )
 
             system_instructions = build_system_instructions(
                 tool_registry=tool_registry,
@@ -124,7 +105,7 @@ class PromptTests(unittest.TestCase):
                 workspace_root=root,
             )
 
-        self.assertIn("<loaded_skills>", system_instructions)
+        self.assertIn("Loaded skills for this task:", system_instructions)
         self.assertIn("Full selected skill body.", system_instructions)
         self.assertIn(str(skill_dir / "SKILL.md"), system_instructions)
 

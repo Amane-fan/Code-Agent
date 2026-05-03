@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -55,10 +56,21 @@ class TokenUsage:
 
 @dataclass(frozen=True)
 class ModelCompletion:
-    """Provider 响应文本，附带可选的 token usage 元数据。"""
+    """Provider 响应内容，附带工具调用和 token usage 元数据。"""
 
     text: str
     usage: TokenUsage | None = None
+    tool_calls: list["ModelToolCall"] = field(default_factory=list)
+    reasoning_content: str = ""
+
+
+@dataclass(frozen=True)
+class ModelToolCall:
+    """模型通过原生 tool-calling 接口请求的一次工具调用。"""
+
+    id: str
+    name: str
+    args: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -84,37 +96,51 @@ class ToolResult:
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def to_json_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
-EventKind = Literal["memory", "task", "summary", "action", "observation", "final_answer"]
+
+EventRole = Literal["system", "user", "assistant", "tool"]
+EventType = Literal["memory", "task", "summary", "tool_call", "tool_result", "final_answer"]
 
 
 @dataclass(frozen=True)
 class AgentEvent:
-    """ReAct 循环中的一条可审计历史事件。"""
+    """ReAct 循环中的一条 JSON 可审计历史事件。"""
 
-    kind: EventKind
-    content: str
+    role: EventRole
+    type: EventType
+    content: str = ""
     tool: str | None = None
+    call_id: str | None = None
     args: dict[str, Any] = field(default_factory=dict)
     result: ToolResult | None = None
+    reasoning_content: str = ""
 
     @property
-    def tag(self) -> str:
-        return f"<{self.kind}>{self.content}</{self.kind}>"
+    def kind(self) -> EventType:
+        """兼容旧调用点；新代码应使用 type。"""
+
+        return self.type
 
     def to_json_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
-            "kind": self.kind,
+            "role": self.role,
+            "type": self.type,
             "content": self.content,
-            "tag": self.tag,
         }
         if self.tool is not None:
             data["tool"] = self.tool
+        if self.call_id is not None:
+            data["call_id"] = self.call_id
         if self.args:
             data["args"] = self.args
         if self.result is not None:
-            data["result"] = asdict(self.result)
+            data["result"] = self.result.to_json_dict()
         return data
+
+    def to_json_line(self) -> str:
+        return json.dumps(self.to_json_dict(), ensure_ascii=False, sort_keys=True)
 
 
 @dataclass(frozen=True)

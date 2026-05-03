@@ -1,11 +1,22 @@
 from __future__ import annotations
 
-import re
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Sequence
 
-from code_agent.models import AgentEvent, ModelCallUsage, ModelCompletion, WorkspaceContext
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.tools import BaseTool
+
+from code_agent.models import AgentEvent, ModelCallUsage, ModelCompletion
+
+
+COMPACTION_SYSTEM_INSTRUCTIONS = (
+    "Compress prior conversation JSON events into durable memory for a coding agent. "
+    "Preserve user goals, decisions, files changed or inspected, tool outcomes, and "
+    "unresolved follow-ups. Do not include secrets. Return one strict JSON event with "
+    'role "assistant", type "final_answer", and the memory summary in content.'
+)
 
 
 class CompletionProvider(Protocol):
@@ -13,7 +24,13 @@ class CompletionProvider(Protocol):
     def name(self) -> str:
         ...
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
+    def complete(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        model: str,
+        tools: Sequence[BaseTool] | None = None,
+    ) -> ModelCompletion:
         ...
 
 
@@ -41,7 +58,7 @@ class ConversationSession:
     def initial_history(self) -> list[AgentEvent]:
         events: list[AgentEvent] = []
         if self.memory_summary.strip():
-            events.append(AgentEvent("memory", self.memory_summary.strip()))
+            events.append(AgentEvent(role="system", type="memory", content=self.memory_summary.strip()))
         for turn in self.turns:
             events.extend(turn)
         return events
@@ -98,7 +115,7 @@ class ConversationSession:
     def _events_to_compact(self, split_index: int) -> list[AgentEvent]:
         events: list[AgentEvent] = []
         if self.memory_summary.strip():
-            events.append(AgentEvent("memory", self.memory_summary.strip()))
+            events.append(AgentEvent(role="system", type="memory", content=self.memory_summary.strip()))
         for turn in self.turns[:split_index]:
             events.extend(turn)
         return events
@@ -109,28 +126,21 @@ class ConversationSession:
         events: list[AgentEvent],
     ) -> tuple[str, bool, str, list[ModelCallUsage]]:
         fallback = _fallback_summary(events)
-        system_instructions = _provider_system_instructions(provider)
         if provider.name == "offline":
             return fallback, True, "offline provider does not summarize memory", []
         try:
             response = provider.complete(
-                _compression_prompt(events),
-                WorkspaceContext(
-                    root=self.workspace_root,
-                    prompt="compact conversation memory",
-                    git_status="",
-                    files=[],
-                ),
+                _compression_messages(events),
                 model=self.model,
             )
-            completion = _normalize_completion(response)
+            completion = response if isinstance(response, ModelCompletion) else ModelCompletion(text=str(response))
             model_call = ModelCallUsage(
                 provider=provider.name,
                 model=self.model,
                 purpose="compaction",
                 ok=True,
                 usage=completion.usage,
-                system_instructions=system_instructions,
+                system_instructions=COMPACTION_SYSTEM_INSTRUCTIONS,
             )
             summary = _summary_from_response(completion.text)
             if not summary:
@@ -148,68 +158,53 @@ class ConversationSession:
                         purpose="compaction",
                         ok=False,
                         error=str(exc),
-                        system_instructions=system_instructions,
+                        system_instructions=COMPACTION_SYSTEM_INSTRUCTIONS,
                     )
                 ],
             )
 
 
-def _compression_prompt(events: list[AgentEvent]) -> str:
-    return (
-        "<task>Compress the following prior conversation into durable memory for a coding "
-        "agent. Preserve user goals, decisions, files changed or inspected, tool outcomes, "
-        "and unresolved follow-ups. Do not include secrets. Return only a concise "
-        "<summary> plus <final_answer> with the memory text.</task>\n\n"
-        "<conversation_to_compact>\n"
-        f"{_render_events(events)}\n"
-        "</conversation_to_compact>"
-    )
+def _compression_messages(events: list[AgentEvent]) -> list[BaseMessage]:
+    return [
+        SystemMessage(content=COMPACTION_SYSTEM_INSTRUCTIONS),
+        HumanMessage(content=_render_events(events)),
+    ]
 
 
 def _summary_from_response(text: str) -> str:
-    return _extract_tag(text, "final_answer") or _extract_tag(text, "summary") or text.strip()
-
-
-def _normalize_completion(response: str | ModelCompletion) -> ModelCompletion:
-    if isinstance(response, ModelCompletion):
-        return response
-    return ModelCompletion(text=response)
-
-
-def _provider_system_instructions(provider: CompletionProvider) -> str:
-    value = getattr(provider, "system_instructions", "")
-    if isinstance(value, str):
-        return value
-    return ""
-
-
-def _extract_tag(text: str, tag: str) -> str:
-    match = re.search(rf"<{tag}>(.*?)</{tag}>", text, flags=re.DOTALL)
-    if match is None:
+    stripped = text.strip()
+    if not stripped:
         return ""
-    return match.group(1).strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
+    if isinstance(payload, dict) and payload.get("type") == "final_answer":
+        content = payload.get("content")
+        return content if isinstance(content, str) else ""
+    return stripped
 
 
 def _fallback_summary(events: list[AgentEvent]) -> str:
     lines: list[str] = []
     for event in events:
-        if event.kind == "memory":
+        if event.type == "memory":
             lines.append(f"Previous memory: {_truncate(event.content, 2_000)}")
-        elif event.kind == "task":
+        elif event.type == "task":
             lines.append(f"User task: {_truncate(event.content, 1_000)}")
-        elif event.kind == "summary":
+        elif event.type == "summary":
             lines.append(f"Agent summary: {_truncate(event.content, 1_000)}")
-        elif event.kind == "final_answer":
+        elif event.type == "final_answer":
             lines.append(f"Agent final answer: {_truncate(event.content, 1_000)}")
-        elif event.kind == "action":
-            lines.append(f"Tool action: {_truncate(event.content, 600)}")
-        elif event.kind == "observation":
-            lines.append(f"Tool observation: {_truncate(event.content, 600)}")
+        elif event.type == "tool_call":
+            lines.append(f"Tool call: {_truncate(event.content, 600)}")
+        elif event.type == "tool_result":
+            lines.append(f"Tool result: {_truncate(event.content, 600)}")
     return _truncate("\n".join(lines), 12_000)
 
 
 def _render_events(events: list[AgentEvent]) -> str:
-    return "\n".join(event.tag for event in events)
+    return "\n".join(event.to_json_line() for event in events)
 
 
 def _truncate(text: str, max_chars: int) -> str:

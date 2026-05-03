@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from code_agent.config import configured_model, configured_value
-from code_agent.models import ModelCompletion, TokenUsage, WorkspaceContext
-from code_agent.prompting import BASE_SYSTEM_INSTRUCTIONS
+from code_agent.models import ModelCompletion, ModelToolCall, TokenUsage
 
-
-SYSTEM_INSTRUCTIONS = BASE_SYSTEM_INSTRUCTIONS
 
 CHAT_COMPLETIONS_SUFFIX = "/chat/completions"
 
@@ -23,7 +23,13 @@ class ModelProvider(Protocol):
     def name(self) -> str:
         ...
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
+    def complete(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        model: str,
+        tools: Sequence[BaseTool] | None = None,
+    ) -> ModelCompletion:
         ...
 
 
@@ -33,23 +39,38 @@ class OfflineProvider:
 
     name: str = "offline"
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> ModelCompletion:
+    def complete(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        model: str,
+        tools: Sequence[BaseTool] | None = None,
+    ) -> ModelCompletion:
         return ModelCompletion(
-            text=(
-                "<summary>离线模式不会调用远端模型或主动选择工具。</summary>\n"
-                "<final_answer>Offline mode received the task and produced no tool actions.</final_answer>"
+            text=json.dumps(
+                {
+                    "role": "assistant",
+                    "type": "final_answer",
+                    "content": "Offline mode received the task and produced no tool actions.",
+                },
+                ensure_ascii=False,
             )
         )
 
 
 @dataclass(frozen=True)
 class OpenAICompatibleChatProvider:
-    """通过 LangChain 调用 OpenAI 兼容的 chat model，生成 ReAct 下一步输出。"""
+    """通过 LangChain 调用 OpenAI 兼容的 chat model，使用原生 tool-calling。"""
 
     name: str = "openai"
-    system_instructions: str = BASE_SYSTEM_INSTRUCTIONS
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> ModelCompletion:
+    def complete(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        model: str,
+        tools: Sequence[BaseTool] | None = None,
+    ) -> ModelCompletion:
         selected_model = configured_model() or model
         api_key = configured_value("API_KEY", "OPENAI_API_KEY")
         if not api_key:
@@ -58,33 +79,90 @@ class OpenAICompatibleChatProvider:
             )
 
         try:
-            llm = ChatOpenAI(
+            llm = _ReasoningContentChatOpenAI(
                 model=selected_model,
                 api_key=SecretStr(api_key),
                 base_url=_langchain_base_url(),
                 timeout=120,
                 max_retries=0,
             )
-            message = llm.invoke([("system", self.system_instructions), ("human", prompt)])
+            runnable = llm.bind_tools(list(tools)) if tools else llm
+            message = runnable.invoke(list(messages))
         except Exception as exc:
             raise RuntimeError(f"LangChain model request failed: {exc}") from exc
 
         return ModelCompletion(
             text=_extract_langchain_message_text(message),
             usage=_extract_langchain_token_usage(message),
+            tool_calls=_extract_langchain_tool_calls(message),
+            reasoning_content=_extract_langchain_reasoning_content(message),
         )
 
 
-def make_provider(name: str, *, system_instructions: str | None = None) -> ModelProvider:
-    """根据 CLI 配置创建模型提供方实例。"""
+class _ReasoningContentChatOpenAI(ChatOpenAI):
+    """保留 OpenAI 兼容 thinking 模式要求回灌的 reasoning_content。"""
 
+    def _get_request_payload(
+        self,
+        input_: Any,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        messages = self._convert_input(input_).to_messages()
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        payload_messages = payload.get("messages")
+        if not isinstance(payload_messages, list):
+            return payload
+
+        for source_message, payload_message in zip(messages, payload_messages, strict=False):
+            if not isinstance(source_message, AIMessage) or not isinstance(payload_message, dict):
+                continue
+            reasoning_content = _extract_langchain_reasoning_content(source_message)
+            if reasoning_content:
+                # LangChain 当前不会自动序列化这个兼容字段，这里补回给下游 API。
+                payload_message["reasoning_content"] = reasoning_content
+        return payload
+
+    def _create_chat_result(
+        self,
+        response: Any,
+        generation_info: dict[str, Any] | None = None,
+    ) -> Any:
+        raw_response = _openai_response_to_mapping(response)
+        chat_result = super()._create_chat_result(response, generation_info)
+        choices = raw_response.get("choices") if isinstance(raw_response, dict) else None
+        if not isinstance(choices, list):
+            return chat_result
+
+        for generation, choice in zip(chat_result.generations, choices, strict=False):
+            message = _object_value(choice, "message")
+            reasoning_content = _extract_reasoning_content_from_value(message)
+            if reasoning_content and isinstance(generation.message, AIMessage):
+                generation.message.additional_kwargs["reasoning_content"] = reasoning_content
+        return chat_result
+
+
+def _openai_response_to_mapping(response: object) -> dict[str, Any]:
+    if isinstance(response, dict):
+        return response
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(exclude={"choices": {"__all__": {"message": {"parsed"}}}})
+        if isinstance(dumped, dict):
+            return dumped
+    return {}
+
+
+def make_provider(name: str, *, system_instructions: str | None = None) -> ModelProvider:
+    """根据 CLI 配置创建模型提供方实例。system_instructions 参数保留兼容。"""
+
+    _ = system_instructions
     normalized = name.lower().strip()
     if normalized == "offline":
         return OfflineProvider()
     if normalized == "openai":
-        return OpenAICompatibleChatProvider(
-            system_instructions=system_instructions or BASE_SYSTEM_INSTRUCTIONS
-        )
+        return OpenAICompatibleChatProvider()
     raise ValueError(f"unknown provider: {name}")
 
 
@@ -126,6 +204,102 @@ def _extract_langchain_message_text(message: object) -> str:
         return "\n".join(chunks)
 
     return str(content)
+
+
+def _extract_langchain_tool_calls(message: object) -> list[ModelToolCall]:
+    raw_calls = _object_value(message, "tool_calls")
+    if not isinstance(raw_calls, list):
+        return []
+
+    calls: list[ModelToolCall] = []
+    for index, raw_call in enumerate(raw_calls, start=1):
+        name = _object_value(raw_call, "name")
+        raw_args = _object_value(raw_call, "args")
+        raw_id = _object_value(raw_call, "id")
+        if not isinstance(name, str) or not name:
+            continue
+        args = _normalize_tool_call_args(raw_args)
+        call_id = raw_id if isinstance(raw_id, str) and raw_id else f"call_{index}"
+        calls.append(ModelToolCall(id=call_id, name=name, args=args))
+    return calls
+
+
+def _extract_langchain_reasoning_content(message: object) -> str:
+    reasoning_content = _object_value(message, "reasoning_content")
+    if isinstance(reasoning_content, str):
+        return reasoning_content
+
+    additional_kwargs = _object_value(message, "additional_kwargs")
+    reasoning_content = _extract_reasoning_content_from_value(additional_kwargs)
+    if reasoning_content:
+        return reasoning_content
+
+    response_metadata = _object_value(message, "response_metadata")
+    reasoning_content = _extract_reasoning_content_from_value(response_metadata)
+    if reasoning_content:
+        return reasoning_content
+
+    content = _object_value(message, "content")
+    if isinstance(content, list):
+        reasoning_content = _extract_reasoning_content_from_value(content)
+        if reasoning_content:
+            return reasoning_content
+    return ""
+
+
+def _extract_reasoning_content_from_value(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        direct = value.get("reasoning_content")
+        if isinstance(direct, str):
+            return direct
+
+        reasoning = value.get("reasoning")
+        if isinstance(reasoning, str):
+            return reasoning
+        if isinstance(reasoning, dict):
+            nested = _reasoning_text_from_mapping(reasoning)
+            if nested:
+                return nested
+
+        if _is_reasoning_block(value):
+            block_text = _reasoning_text_from_mapping(value)
+            if block_text:
+                return block_text
+        return ""
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict) and _is_reasoning_block(item):
+                block_text = _reasoning_text_from_mapping(item)
+                if block_text:
+                    return block_text
+    return ""
+
+
+def _reasoning_text_from_mapping(value: dict[str, Any]) -> str:
+    for key in ("reasoning_content", "content", "text"):
+        candidate = value.get(key)
+        if isinstance(candidate, str):
+            return candidate
+    return ""
+
+
+def _is_reasoning_block(value: dict[str, Any]) -> bool:
+    block_type = value.get("type")
+    return isinstance(block_type, str) and "reason" in block_type.lower()
+
+
+def _normalize_tool_call_args(value: object) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _extract_langchain_token_usage(message: object) -> TokenUsage | None:

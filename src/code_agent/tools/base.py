@@ -1,21 +1,25 @@
 from __future__ import annotations
 
-import inspect
 import json
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from pkgutil import iter_modules
-from typing import Any, Callable, ClassVar, Sequence
+from typing import Any, Callable, Protocol, Sequence
+
+from langchain_core.tools import BaseTool
 
 from code_agent.models import ToolResult
 from code_agent.skills import SkillRegistry
 
 ShellApproval = Callable[[str], bool]
 JsonSchema = dict[str, Any]
-ToolClass = type["Tool"]
-_TOOL_CLASSES: list[ToolClass] = []
+Tool = BaseTool
+
+
+class ToolFactory(Protocol):
+    def __call__(self, context: "ToolContext") -> Sequence[BaseTool]:
+        ...
 
 
 @dataclass(frozen=True)
@@ -29,7 +33,7 @@ class ToolContext:
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """渲染到模型 instructions 中的工具元数据。"""
+    """渲染到审计信息中的工具元数据。"""
 
     name: str
     description: str
@@ -45,46 +49,11 @@ class ToolSpec:
         return _schema_to_text(self.returns_schema)
 
 
-class Tool(ABC):
-    """所有可被模型调用的本地工具的基类。"""
-
-    name: ClassVar[str]
-    description: ClassVar[str]
-    parameters_schema: ClassVar[JsonSchema]
-    returns_schema: ClassVar[JsonSchema]
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        if inspect.isabstract(cls):
-            return
-        if not cls.__module__.startswith("code_agent.tools."):
-            return
-        if not getattr(cls, "name", None):
-            return
-        _TOOL_CLASSES.append(cls)
-
-    def __init__(self, context: ToolContext) -> None:
-        self.context = context
-
-    @property
-    def spec(self) -> ToolSpec:
-        return ToolSpec(
-            name=self.name,
-            description=self.description,
-            parameters_schema=self.parameters_schema,
-            returns_schema=self.returns_schema,
-        )
-
-    @abstractmethod
-    def run(self, args: dict[str, Any]) -> ToolResult:
-        """使用模型提供的参数执行工具。"""
-
-
 class ToolRegistry:
-    """按名称分发工具调用，并暴露启动时渲染的工具元数据。"""
+    """按名称分发 LangChain BaseTool 调用，并统一返回 ToolResult。"""
 
-    def __init__(self, tools: Sequence[Tool]) -> None:
-        by_name: dict[str, Tool] = {}
+    def __init__(self, tools: Sequence[BaseTool]) -> None:
+        by_name: dict[str, BaseTool] = {}
         for tool in tools:
             if tool.name in by_name:
                 raise ValueError(f"duplicate tool name: {tool.name}")
@@ -93,33 +62,48 @@ class ToolRegistry:
 
     @classmethod
     def default(cls, context: ToolContext) -> "ToolRegistry":
-        tools = [tool_class(context) for tool_class in discover_tool_classes()]
-        return cls(tools)
+        return cls(create_default_tools(context))
+
+    @property
+    def tools(self) -> list[BaseTool]:
+        return list(self._tools.values())
 
     @property
     def specs(self) -> list[ToolSpec]:
-        return [tool.spec for tool in self._tools.values()]
+        return [_tool_spec(tool) for tool in self._tools.values()]
 
     def execute(self, name: str, args: dict[str, Any]) -> ToolResult:
         tool = self._tools.get(name)
         if tool is None:
             return ToolResult(name, False, error=f"unknown tool: {name}")
         try:
-            return tool.run(args)
-        except ValueError as exc:
+            raw_result = tool.invoke(args)
+        except Exception as exc:
             return ToolResult(name, False, error=str(exc), metadata={"args": args})
+        return _normalize_tool_result(name, raw_result)
 
 
-def discover_tool_classes(package_name: str = "code_agent.tools") -> list[ToolClass]:
-    """导入工具包模块，返回包内的 Tool 子类。"""
+def create_default_tools(context: ToolContext, package_name: str = "code_agent.tools") -> list[BaseTool]:
+    tools: list[BaseTool] = []
+    for factory in discover_tool_factories(package_name):
+        tools.extend(factory(context))
+    return tools
 
-    _import_tool_modules(package_name)
-    discovered: dict[str, ToolClass] = {}
-    for tool_class in _TOOL_CLASSES:
-        if not tool_class.__module__.startswith(f"{package_name}."):
+
+def discover_tool_factories(package_name: str = "code_agent.tools") -> list[ToolFactory]:
+    """导入工具包模块，返回模块级 create_tools 工厂。"""
+
+    package = import_module(package_name)
+    package_paths = getattr(package, "__path__", [])
+    factories: list[ToolFactory] = []
+    for module_info in iter_modules(package_paths):
+        if module_info.name.startswith("_") or module_info.name == "base":
             continue
-        discovered[f"{tool_class.__module__}.{tool_class.__qualname__}"] = tool_class
-    return list(discovered.values())
+        module = import_module(f"{package_name}.{module_info.name}")
+        factory = getattr(module, "create_tools", None)
+        if callable(factory):
+            factories.append(factory)
+    return factories
 
 
 def create_workspace_tool_registry(
@@ -128,7 +112,7 @@ def create_workspace_tool_registry(
     skill_registry: SkillRegistry | None = None,
     shell_approval: ShellApproval | None = None,
 ) -> ToolRegistry:
-    """为单个 workspace 创建默认的自动发现工具注册表。"""
+    """为单个 workspace 创建默认工具注册表。"""
 
     context = ToolContext(
         workspace_root=workspace_root,
@@ -138,26 +122,61 @@ def create_workspace_tool_registry(
     return ToolRegistry.default(context)
 
 
-def _import_tool_modules(package_name: str) -> None:
-    package = import_module(package_name)
-    package_paths = getattr(package, "__path__", [])
-    for module in iter_modules(package_paths):
-        if module.name.startswith("_") or module.name == "base":
-            continue
-        import_module(f"{package_name}.{module.name}")
+def _tool_spec(tool: BaseTool) -> ToolSpec:
+    return ToolSpec(
+        name=tool.name,
+        description=tool.description or "",
+        parameters_schema=_tool_args_schema(tool),
+        returns_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "ok": {"type": "boolean"},
+                "output": {"type": "string"},
+                "error": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+        },
+    )
+
+
+def _tool_args_schema(tool: BaseTool) -> JsonSchema:
+    schema_object = getattr(tool, "args_schema", None)
+    if schema_object is None:
+        args = getattr(tool, "args", None)
+        if isinstance(args, dict):
+            return {"type": "object", "properties": args}
+        return {"type": "object", "properties": {}}
+    if isinstance(schema_object, dict):
+        return schema_object
+    model_json_schema = getattr(schema_object, "model_json_schema", None)
+    if callable(model_json_schema):
+        schema = model_json_schema()
+        return schema if isinstance(schema, dict) else {"type": "object", "properties": {}}
+    schema = getattr(schema_object, "schema", None)
+    if callable(schema):
+        legacy_schema = schema()
+        return legacy_schema if isinstance(legacy_schema, dict) else {"type": "object"}
+    return {"type": "object", "properties": {}}
+
+
+def _normalize_tool_result(name: str, raw_result: object) -> ToolResult:
+    if isinstance(raw_result, ToolResult):
+        return raw_result
+    if isinstance(raw_result, dict):
+        ok = raw_result.get("ok", True)
+        output = raw_result.get("output", "")
+        error = raw_result.get("error", "")
+        metadata = raw_result.get("metadata", {})
+        return ToolResult(
+            name=str(raw_result.get("name", name)),
+            ok=bool(ok),
+            output=output if isinstance(output, str) else json.dumps(output, ensure_ascii=False),
+            error=error if isinstance(error, str) else str(error),
+            metadata=metadata if isinstance(metadata, dict) else {"metadata": metadata},
+        )
+    return ToolResult(name, True, output=str(raw_result))
 
 
 def _schema_to_text(schema: JsonSchema) -> str:
     return json.dumps(schema, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-
-
-def required_str(tool: str, args: dict[str, Any], name: str) -> str:
-    value = args.get(name)
-    if not isinstance(value, str):
-        raise ValueError(f"{tool}.{name} must be a string")
-    return value
-
-
-def reject_args(tool: str, args: dict[str, Any]) -> None:
-    if args:
-        raise ValueError(f"{tool} does not accept arguments")

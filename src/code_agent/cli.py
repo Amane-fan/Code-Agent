@@ -42,20 +42,20 @@ class TerminalRenderer:
             "memory": "Memory",
             "task": "Task",
             "summary": "Summary",
-            "action": "Action",
-            "observation": "Observation",
+            "tool_call": "Tool Call",
+            "tool_result": "Tool Result",
             "final_answer": "Final Answer",
-        }[event.kind]
+        }[event.type]
         border_style = {
             "memory": "cyan",
             "task": "blue",
             "summary": "green",
-            "action": "yellow",
-            "observation": "magenta",
+            "tool_call": "yellow",
+            "tool_result": "magenta",
             "final_answer": "bold green",
-        }[event.kind]
+        }[event.type]
         renderable: RenderableType
-        if event.kind in {"action", "observation"}:
+        if event.type in {"tool_call", "tool_result"}:
             renderable = self._json_or_text(event.content)
         else:
             renderable = Text(event.content)

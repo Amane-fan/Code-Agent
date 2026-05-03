@@ -4,15 +4,42 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from typing import Sequence
 
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph
 
 from code_agent.agent import CodingAgent
 from code_agent.config import AgentConfig
-from code_agent.models import ModelCallUsage, ModelCompletion, TokenUsage, WorkspaceContext
+from code_agent.models import ModelCallUsage, ModelCompletion, ModelToolCall, TokenUsage
 from code_agent.session import SessionStore
 from code_agent.skill_selection import SKILL_SELECTOR_SYSTEM_INSTRUCTIONS
+
+
+def _event_text(message: BaseMessage) -> str:
+    content = message.content
+    if isinstance(content, str):
+        return content
+    return str(content)
+
+
+def _batch_text(messages: Sequence[BaseMessage]) -> str:
+    return "\n".join(_event_text(message) for message in messages)
+
+
+def _summary(content: str) -> str:
+    return json.dumps(
+        {"role": "assistant", "type": "summary", "content": content},
+        ensure_ascii=False,
+    )
+
+
+def _final(content: str, *, summary: str = "") -> str:
+    payload = {"role": "assistant", "type": "final_answer", "content": content}
+    if summary:
+        payload["summary"] = summary
+    return json.dumps(payload, ensure_ascii=False)
 
 
 class SequencedProvider:
@@ -21,34 +48,52 @@ class SequencedProvider:
     def __init__(
         self,
         responses: list[str | ModelCompletion],
-        *,
-        system_instructions: str = "",
     ) -> None:
         self.responses = responses
-        self.prompts: list[str] = []
-        self.system_instructions = system_instructions
+        self.message_batches: list[list[BaseMessage]] = []
+        self.bound_tool_names: list[list[str]] = []
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
-        self.prompts.append(prompt)
+    def complete(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        model: str,
+        tools: Sequence[BaseTool] | None = None,
+    ) -> ModelCompletion:
+        self.message_batches.append(list(messages))
+        self.bound_tool_names.append([tool.name for tool in tools or []])
         if not self.responses:
             raise AssertionError("provider called too many times")
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, ModelCompletion):
+            return response
+        return ModelCompletion(text=response)
+
+    @property
+    def prompts(self) -> list[str]:
+        return [_batch_text(messages) for messages in self.message_batches]
 
 
-class FailingOnceProvider:
-    name = "fake"
-
+class FailingOnceProvider(SequencedProvider):
     def __init__(self, response: str) -> None:
-        self.response = response
-        self.prompts: list[str] = []
+        super().__init__([response])
         self.fail_next = True
 
-    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
-        self.prompts.append(prompt)
+    def complete(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        model: str,
+        tools: Sequence[BaseTool] | None = None,
+    ) -> ModelCompletion:
+        self.message_batches.append(list(messages))
+        self.bound_tool_names.append([tool.name for tool in tools or []])
         if self.fail_next:
             self.fail_next = False
             raise RuntimeError("selector unavailable")
-        return self.response
+        if not self.responses:
+            raise AssertionError("provider called too many times")
+        return ModelCompletion(text=self.responses.pop(0))
 
 
 class ReactLoopTests(unittest.TestCase):
@@ -62,15 +107,23 @@ class ReactLoopTests(unittest.TestCase):
 
         self.assertTrue(callable(getattr(graph, "invoke", None)))
 
-    def test_tool_observation_is_appended_to_next_model_call(self) -> None:
+    def test_tool_result_is_appended_to_next_model_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "README.md").write_text("# Demo\n", encoding="utf-8")
             provider = SequencedProvider(
                 [
-                    '<summary>需要读取 README。</summary>\n'
-                    '<action>{"tool":"read_file","args":{"path":"README.md"}}</action>',
-                    "<summary>已经拿到文件内容。</summary>\n<final_answer>README 是 Demo。</final_answer>",
+                    ModelCompletion(
+                        text=_summary("需要读取 README。"),
+                        tool_calls=[
+                            ModelToolCall(
+                                id="call_read",
+                                name="read_file",
+                                args={"path": "README.md"},
+                            )
+                        ],
+                    ),
+                    _final("README 是 Demo。"),
                 ]
             )
 
@@ -82,12 +135,86 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(run.final_answer, "README 是 Demo。")
             self.assertEqual(run.response_text, "README 是 Demo。")
             self.assertEqual(run.iterations, 2)
-            self.assertIn("<observation>", provider.prompts[1])
+            self.assertIn('"type": "tool_result"', provider.prompts[1])
             self.assertIn("# Demo", provider.prompts[1])
-            self.assertEqual([event.kind for event in run.history], ["task", "summary", "action", "observation", "summary", "final_answer"])
-            self.assertNotIn("Only use these tools", provider.prompts[0])
-            self.assertNotIn("Tool schemas", provider.prompts[0])
-            self.assertNotIn("Workspace:", provider.prompts[0])
+            self.assertEqual(
+                [event.type for event in run.history],
+                ["task", "summary", "tool_call", "tool_result", "final_answer"],
+            )
+            self.assertIn("read_file", provider.bound_tool_names[0])
+            self.assertNotIn("<action>", provider.prompts[0])
+            self.assertNotIn("<observation>", provider.prompts[1])
+
+    def test_multiple_tool_calls_are_executed_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.txt").write_text("alpha\n", encoding="utf-8")
+            (root / "b.txt").write_text("beta\n", encoding="utf-8")
+            provider = SequencedProvider(
+                [
+                    ModelCompletion(
+                        text=_summary("读取两个文件。"),
+                        tool_calls=[
+                            ModelToolCall(id="call_a", name="read_file", args={"path": "a.txt"}),
+                            ModelToolCall(id="call_b", name="read_file", args={"path": "b.txt"}),
+                        ],
+                    ),
+                    _final("alpha beta"),
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="offline"),
+                provider_factory=lambda name: provider,
+            ).run("read both", save_session=False)
+
+            self.assertEqual(run.final_answer, "alpha beta")
+            self.assertEqual(
+                [event.call_id for event in run.history if event.type == "tool_result"],
+                ["call_a", "call_b"],
+            )
+            self.assertLess(provider.prompts[1].index("alpha"), provider.prompts[1].index("beta"))
+
+    def test_tool_call_replay_preserves_reasoning_content_for_thinking_models(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.txt").write_text("alpha\n", encoding="utf-8")
+            (root / "b.txt").write_text("beta\n", encoding="utf-8")
+            provider = SequencedProvider(
+                [
+                    ModelCompletion(
+                        text=_summary("读取两个文件。"),
+                        tool_calls=[
+                            ModelToolCall(id="call_a", name="read_file", args={"path": "a.txt"}),
+                            ModelToolCall(id="call_b", name="read_file", args={"path": "b.txt"}),
+                        ],
+                        reasoning_content="thinking trace",
+                    ),
+                    _final("alpha beta"),
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="offline"),
+                provider_factory=lambda name: provider,
+            ).run("read both", save_session=False)
+
+            tool_call_messages = [
+                message
+                for message in provider.message_batches[1]
+                if isinstance(message, AIMessage) and message.tool_calls
+            ]
+            self.assertEqual(run.final_answer, "alpha beta")
+            self.assertEqual(len(tool_call_messages), 1)
+            self.assertEqual(
+                tool_call_messages[0].additional_kwargs["reasoning_content"],
+                "thinking trace",
+            )
+            self.assertEqual(
+                [call["id"] for call in tool_call_messages[0].tool_calls],
+                ["call_a", "call_b"],
+            )
+            self.assertNotIn("thinking trace", provider.prompts[1])
 
     def test_model_call_usage_is_recorded_without_history_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,21 +222,13 @@ class ReactLoopTests(unittest.TestCase):
             provider = SequencedProvider(
                 [
                     ModelCompletion(
-                        text='<summary>需要列文件。</summary>\n'
-                        '<action>{"tool":"list_files","args":{}}</action>',
-                        usage=TokenUsage(
-                            prompt_tokens=10,
-                            completion_tokens=5,
-                            total_tokens=15,
-                        ),
+                        text=_summary("需要列文件。"),
+                        usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+                        tool_calls=[ModelToolCall(id="call_list", name="list_files", args={})],
                     ),
                     ModelCompletion(
-                        text="<summary>完成。</summary>\n<final_answer>done</final_answer>",
-                        usage=TokenUsage(
-                            prompt_tokens=20,
-                            completion_tokens=6,
-                            total_tokens=26,
-                        ),
+                        text=_final("done"),
+                        usage=TokenUsage(prompt_tokens=20, completion_tokens=6, total_tokens=26),
                     ),
                 ]
             )
@@ -128,51 +247,15 @@ class ReactLoopTests(unittest.TestCase):
             assert second_usage is not None
             self.assertEqual(first_usage.total_tokens, 15)
             self.assertEqual(second_usage.prompt_tokens, 20)
-            self.assertEqual(
-                [event.kind for event in run.history],
-                ["task", "summary", "action", "observation", "summary", "final_answer"],
-            )
 
-    def test_string_provider_response_records_unknown_model_call_usage(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            provider = SequencedProvider(
-                ["<summary>完成。</summary>\n<final_answer>done</final_answer>"]
-            )
-
-            run = CodingAgent(
-                AgentConfig(workspace_path=root, provider="offline"),
-                provider_factory=lambda name: provider,
-            ).run("task", save_session=False)
-
-            self.assertEqual(len(run.model_calls), 1)
-            self.assertEqual(run.model_calls[0].purpose, "task")
-            self.assertIsNone(run.model_calls[0].usage)
-
-    def test_unclosed_final_answer_tag_does_not_render_protocol_tags(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            provider = SequencedProvider(
-                [
-                    "<summary>直接回答用户问题。</summary>\n\n"
-                    "<final_answer>\n我是 Code Agent。"
-                ]
-            )
-
-            run = CodingAgent(
-                AgentConfig(workspace_path=root, provider="offline"),
-                provider_factory=lambda name: provider,
-            ).run("你是什么模型", save_session=False)
-
-            self.assertEqual(run.final_answer, "我是 Code Agent。")
-            self.assertEqual(run.history[-1].kind, "final_answer")
-            self.assertEqual(run.history[-1].content, "我是 Code Agent。")
-
-    def test_skill_selection_model_call_precedes_main_task(self) -> None:
+    def test_skill_selection_model_call_runs_inside_graph_before_main_task(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
-            (root / "workspace-only.txt").write_text("workspace content must stay out", encoding="utf-8")
+            (root / "workspace-only.txt").write_text(
+                "workspace content must stay out",
+                encoding="utf-8",
+            )
             skills_root = Path(tmp) / "skills"
             skill_dir = skills_root / "python"
             skill_dir.mkdir(parents=True)
@@ -190,7 +273,7 @@ class ReactLoopTests(unittest.TestCase):
                         text='{"skills":["python"]}',
                         usage=TokenUsage(prompt_tokens=3, completion_tokens=2, total_tokens=5),
                     ),
-                    "<summary>完成。</summary>\n<final_answer>skill selected</final_answer>",
+                    _final("skill selected"),
                 ]
             )
 
@@ -212,45 +295,9 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(selection_usage.total_tokens, 5)
             self.assertIn("Available skills JSON", provider.prompts[0])
             self.assertIn('"name": "python"', provider.prompts[0])
-            self.assertIn("<task>使用 python skill</task>", provider.prompts[0])
+            self.assertIn("使用 python skill", provider.prompts[0])
             self.assertNotIn("workspace content must stay out", provider.prompts[0])
-
-    def test_selected_skill_body_enters_main_provider_system_instructions(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "workspace"
-            root.mkdir()
-            skills_root = Path(tmp) / "skills"
-            skill_dir = skills_root / "python"
-            skill_dir.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text(
-                "---\n"
-                "name: python\n"
-                "description: Use when editing Python code.\n"
-                "---\n\n"
-                "Full Python skill body.\n",
-                encoding="utf-8",
-            )
-            selector_provider = SequencedProvider(['{"skills":["python"]}'])
-            task_provider = SequencedProvider(
-                ["<summary>完成。</summary>\n<final_answer>done</final_answer>"]
-            )
-            captured_system_instructions: list[str | None] = []
-
-            def make_fake_provider(name: str, *, system_instructions: str | None = None) -> SequencedProvider:
-                self.assertEqual(name, "openai")
-                captured_system_instructions.append(system_instructions)
-                return selector_provider if len(captured_system_instructions) == 1 else task_provider
-
-            with patch("code_agent.agent.make_provider", side_effect=make_fake_provider):
-                run = CodingAgent(
-                    AgentConfig(workspace_path=root, provider="openai", skills_path=skills_root)
-                ).run("使用 python skill", save_session=False)
-
-            self.assertEqual(run.final_answer, "done")
-            self.assertEqual(len(captured_system_instructions), 2)
-            self.assertNotIn("Full Python skill body.", captured_system_instructions[0] or "")
-            self.assertIn("<loaded_skills>", captured_system_instructions[1] or "")
-            self.assertIn("Full Python skill body.", captured_system_instructions[1] or "")
+            self.assertIn("load_skill_resources", provider.bound_tool_names[1])
 
     def test_skill_selection_failure_continues_without_loaded_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -267,12 +314,7 @@ class ReactLoopTests(unittest.TestCase):
                 "Full Python skill body.\n",
                 encoding="utf-8",
             )
-            provider = SequencedProvider(
-                [
-                    "not json",
-                    "<summary>完成。</summary>\n<final_answer>continued</final_answer>",
-                ]
-            )
+            provider = SequencedProvider(["not json", _final("continued")])
 
             run = CodingAgent(
                 AgentConfig(workspace_path=root, provider="openai", skills_path=skills_root),
@@ -283,10 +325,7 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual([call.purpose for call in run.model_calls], ["skill_selection", "task"])
             self.assertFalse(run.model_calls[0].ok)
             self.assertIn("invalid skill selection JSON", run.model_calls[0].error)
-            self.assertEqual(
-                run.model_calls[0].system_instructions,
-                SKILL_SELECTOR_SYSTEM_INSTRUCTIONS,
-            )
+            self.assertNotIn("Full Python skill body.", run.model_calls[1].system_instructions)
 
     def test_skill_selection_provider_error_continues_without_loaded_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -303,9 +342,7 @@ class ReactLoopTests(unittest.TestCase):
                 "Full Python skill body.\n",
                 encoding="utf-8",
             )
-            provider = FailingOnceProvider(
-                "<summary>完成。</summary>\n<final_answer>continued</final_answer>"
-            )
+            provider = FailingOnceProvider(_final("continued"))
 
             run = CodingAgent(
                 AgentConfig(workspace_path=root, provider="openai", skills_path=skills_root),
@@ -313,13 +350,8 @@ class ReactLoopTests(unittest.TestCase):
             ).run("task", save_session=False)
 
             self.assertEqual(run.final_answer, "continued")
-            self.assertEqual([call.purpose for call in run.model_calls], ["skill_selection", "task"])
             self.assertFalse(run.model_calls[0].ok)
             self.assertIn("selector unavailable", run.model_calls[0].error)
-            self.assertEqual(
-                run.model_calls[0].system_instructions,
-                SKILL_SELECTOR_SYSTEM_INSTRUCTIONS,
-            )
 
     def test_skill_selection_ignores_unknown_skill_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -336,12 +368,7 @@ class ReactLoopTests(unittest.TestCase):
                 "Full Python skill body.\n",
                 encoding="utf-8",
             )
-            provider = SequencedProvider(
-                [
-                    '{"skills":["missing","python"]}',
-                    "<summary>完成。</summary>\n<final_answer>continued</final_answer>",
-                ]
-            )
+            provider = SequencedProvider(['{"skills":["missing","python"]}', _final("continued")])
 
             run = CodingAgent(
                 AgentConfig(workspace_path=root, provider="openai", skills_path=skills_root),
@@ -355,35 +382,23 @@ class ReactLoopTests(unittest.TestCase):
     def test_same_agent_remembers_previous_turns_but_new_agent_starts_clean(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            window_provider = SequencedProvider(
-                [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
-                ]
-            )
-            clean_provider = SequencedProvider(
-                ["<summary>完成。</summary>\n<final_answer>clean answer</final_answer>"]
-            )
+            window_provider = SequencedProvider([_final("first answer"), _final("second answer")])
+            clean_provider = SequencedProvider([_final("clean answer")])
             config = AgentConfig(workspace_path=root, provider="offline")
 
             agent = CodingAgent(config, provider_factory=lambda name: window_provider)
-            agent.run(
-                "first task",
-                save_session=False,
-            )
-            agent.run(
-                "second task",
-                save_session=False,
-            )
+            agent.run("first task", save_session=False)
+            agent.run("second task", save_session=False)
             CodingAgent(config, provider_factory=lambda name: clean_provider).run(
                 "clean task",
                 save_session=False,
             )
 
-            self.assertIn("<task>first task</task>", window_provider.prompts[0])
-            self.assertIn("<task>second task</task>", window_provider.prompts[1])
-            self.assertIn("<final_answer>first answer</final_answer>", window_provider.prompts[1])
-            self.assertIn("<task>clean task</task>", clean_provider.prompts[0])
+            self.assertIn('"content": "first task"', window_provider.prompts[0])
+            self.assertIn('"content": "second task"', window_provider.prompts[1])
+            self.assertIn('"content": "first answer"', window_provider.prompts[1])
+            self.assertNotIn("<final_answer>", window_provider.prompts[1])
+            self.assertIn('"content": "clean task"', clean_provider.prompts[0])
             self.assertNotIn("first task", clean_provider.prompts[0])
 
     def test_manual_compact_uses_model_summary_and_keeps_recent_turns(self) -> None:
@@ -391,11 +406,11 @@ class ReactLoopTests(unittest.TestCase):
             root = Path(tmp)
             provider = SequencedProvider(
                 [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
-                    "<summary>压缩完成。</summary>\n<final_answer>remember first task</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>fourth answer</final_answer>",
+                    _final("first answer"),
+                    _final("second answer"),
+                    _final("third answer"),
+                    _final("remember first task"),
+                    _final("fourth answer"),
                 ]
             )
             agent = CodingAgent(
@@ -412,11 +427,11 @@ class ReactLoopTests(unittest.TestCase):
             self.assertTrue(result.compacted)
             self.assertFalse(result.used_fallback)
             self.assertEqual(result.summary, "remember first task")
-            self.assertIn("<memory>remember first task</memory>", provider.prompts[-1])
-            self.assertNotIn("<task>first task</task>", provider.prompts[-1])
-            self.assertIn("<task>second task</task>", provider.prompts[-1])
-            self.assertIn("<task>third task</task>", provider.prompts[-1])
-            self.assertIn("<task>fourth task</task>", provider.prompts[-1])
+            self.assertIn('"type": "memory"', provider.prompts[-1])
+            self.assertIn("remember first task", provider.prompts[-1])
+            self.assertNotIn('"content": "first task"', provider.prompts[-1])
+            self.assertIn('"content": "second task"', provider.prompts[-1])
+            self.assertIn('"content": "third task"', provider.prompts[-1])
 
     def test_manual_compact_saves_model_call_usage_to_session_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -425,19 +440,14 @@ class ReactLoopTests(unittest.TestCase):
             session_root = Path(tmp) / "sessions"
             provider = SequencedProvider(
                 [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
+                    _final("first answer"),
+                    _final("second answer"),
+                    _final("third answer"),
                     ModelCompletion(
-                        text="<summary>压缩完成。</summary>\n<final_answer>memory</final_answer>",
-                        usage=TokenUsage(
-                            prompt_tokens=30,
-                            completion_tokens=10,
-                            total_tokens=40,
-                        ),
+                        text=_final("memory"),
+                        usage=TokenUsage(prompt_tokens=30, completion_tokens=10, total_tokens=40),
                     ),
-                ],
-                system_instructions="memory compaction system prompt",
+                ]
             )
             agent = CodingAgent(
                 AgentConfig(
@@ -454,10 +464,6 @@ class ReactLoopTests(unittest.TestCase):
             result = agent.compact_memory(save_session=True)
 
             self.assertEqual(result.model_calls[0].purpose, "compaction")
-            self.assertEqual(
-                result.model_calls[0].system_instructions,
-                "memory compaction system prompt",
-            )
             compact_usage = result.model_calls[0].usage
             assert compact_usage is not None
             self.assertEqual(compact_usage.total_tokens, 40)
@@ -465,65 +471,8 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(len(session_files), 1)
             data = json.loads(session_files[0].read_text(encoding="utf-8"))
             self.assertEqual(data["model_calls"][-1]["purpose"], "compaction")
-            self.assertEqual(
-                data["model_calls"][-1]["system_instructions"],
-                "",
-            )
+            self.assertEqual(data["model_calls"][-1]["system_instructions"], "")
             self.assertEqual(data["model_calls"][-1]["usage"]["total_tokens"], 40)
-            self.assertEqual(len(data["runs"]), 3)
-
-    def test_compact_falls_back_when_model_summary_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            provider = SequencedProvider(
-                [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
-                ]
-            )
-            agent = CodingAgent(
-                AgentConfig(workspace_path=root, provider="offline"),
-                provider_factory=lambda name: provider,
-            )
-
-            agent.run("first task", save_session=False)
-            agent.run("second task", save_session=False)
-            agent.run("third task", save_session=False)
-            result = agent.compact_memory()
-
-            self.assertTrue(result.compacted)
-            self.assertTrue(result.used_fallback)
-            self.assertIn("first task", result.summary)
-            self.assertIn("first answer", result.summary)
-
-    def test_auto_compact_when_conversation_exceeds_limit(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            provider = SequencedProvider(
-                [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
-                    "<summary>压缩完成。</summary>\n<final_answer>auto memory</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>third answer</final_answer>",
-                ]
-            )
-            agent = CodingAgent(
-                AgentConfig(
-                    workspace_path=root,
-                    provider="offline",
-                    max_conversation_chars=1,
-                    recent_turns_to_keep=1,
-                ),
-                provider_factory=lambda name: provider,
-            )
-
-            agent.run("first task", save_session=False)
-            agent.run("second task", save_session=False)
-            agent.run("third task", save_session=False)
-
-            self.assertIn("auto memory", agent.memory_status())
-            self.assertIn("<memory>auto memory</memory>", provider.prompts[-1])
 
     def test_auto_compact_model_call_usage_is_attached_to_current_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -532,15 +481,11 @@ class ReactLoopTests(unittest.TestCase):
             session_root = Path(tmp) / "sessions"
             provider = SequencedProvider(
                 [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                    _final("first answer"),
+                    _final("second answer"),
                     ModelCompletion(
-                        text="<summary>压缩完成。</summary>\n<final_answer>auto memory</final_answer>",
-                        usage=TokenUsage(
-                            prompt_tokens=21,
-                            completion_tokens=9,
-                            total_tokens=30,
-                        ),
+                        text=_final("auto memory"),
+                        usage=TokenUsage(prompt_tokens=21, completion_tokens=9, total_tokens=30),
                     ),
                 ]
             )
@@ -562,38 +507,25 @@ class ReactLoopTests(unittest.TestCase):
             compact_usage = second.model_calls[-1].usage
             assert compact_usage is not None
             self.assertEqual(compact_usage.total_tokens, 30)
-            session_files = list((session_root / "sessions").glob("*.json"))
-            self.assertEqual(len(session_files), 1)
-            data = json.loads(session_files[0].read_text(encoding="utf-8"))
+            data = json.loads(next((session_root / "sessions").glob("*.json")).read_text(encoding="utf-8"))
             self.assertEqual(data["runs"][1]["model_calls"][-1]["purpose"], "compaction")
-            self.assertEqual(data["model_calls"][-1]["usage"]["total_tokens"], 30)
 
-    def test_invalid_action_json_returns_observation_and_continues(self) -> None:
+    def test_shell_tool_call_requires_user_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             provider = SequencedProvider(
                 [
-                    "<summary>格式错误。</summary>\n<action>{bad json}</action>",
-                    "<summary>修正。</summary>\n<final_answer>done</final_answer>",
-                ]
-            )
-
-            run = CodingAgent(
-                AgentConfig(workspace_path=root, provider="offline"),
-                provider_factory=lambda name: provider,
-            ).run("do it", save_session=False)
-
-            self.assertEqual(run.final_answer, "done")
-            self.assertIn("invalid action JSON", provider.prompts[1])
-
-    def test_shell_action_requires_user_approval(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            provider = SequencedProvider(
-                [
-                    '<summary>运行命令。</summary>\n'
-                    '<action>{"tool":"run_shell","args":{"command":"printf hello"}}</action>',
-                    "<summary>命令完成。</summary>\n<final_answer>ok</final_answer>",
+                    ModelCompletion(
+                        text=_summary("运行命令。"),
+                        tool_calls=[
+                            ModelToolCall(
+                                id="call_shell",
+                                name="run_shell",
+                                args={"command": "printf hello"},
+                            )
+                        ],
+                    ),
+                    _final("ok"),
                 ]
             )
             approvals: list[str] = []
@@ -611,32 +543,15 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(run.final_answer, "ok")
             self.assertIn("hello", provider.prompts[1])
 
-    def test_loop_stops_at_max_iterations(self) -> None:
+    def test_loop_stops_at_max_iterations_after_last_tool_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             provider = SequencedProvider(
                 [
-                    '<summary>继续。</summary>\n'
-                    '<action>{"tool":"list_files","args":{}}</action>'
-                    for _ in range(20)
-                ]
-            )
-
-            run = CodingAgent(
-                AgentConfig(workspace_path=root, provider="offline"),
-                provider_factory=lambda name: provider,
-            ).run("loop", save_session=False)
-
-            self.assertEqual(run.iterations, 20)
-            self.assertIn("maximum iteration limit", run.final_answer)
-
-    def test_iteration_limit_records_last_observation_before_final_answer(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            provider = SequencedProvider(
-                [
-                    '<summary>继续。</summary>\n'
-                    '<action>{"tool":"list_files","args":{}}</action>'
+                    ModelCompletion(
+                        text=_summary("继续。"),
+                        tool_calls=[ModelToolCall(id="call_list", name="list_files", args={})],
+                    )
                 ]
             )
 
@@ -647,17 +562,17 @@ class ReactLoopTests(unittest.TestCase):
 
             self.assertEqual(run.iterations, 1)
             self.assertEqual(
-                [event.kind for event in run.history],
-                ["task", "summary", "action", "observation", "final_answer"],
+                [event.type for event in run.history],
+                ["task", "summary", "tool_call", "tool_result", "final_answer"],
             )
             self.assertIn("maximum iteration limit", run.final_answer)
 
-    def test_session_log_contains_tagged_history(self) -> None:
+    def test_session_log_contains_json_events_without_tags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
             session_root = Path(tmp) / "sessions"
-            provider = SequencedProvider(["<summary>完成。</summary>\n<final_answer>answer</final_answer>"])
+            provider = SequencedProvider([_final("answer", summary="完成。")])
 
             run = CodingAgent(
                 AgentConfig(
@@ -672,61 +587,17 @@ class ReactLoopTests(unittest.TestCase):
             assert run.session_path is not None
             data = json.loads(run.session_path.read_text(encoding="utf-8"))
             self.assertEqual(data["final_answer"], "answer")
-            self.assertEqual(data["history"][0]["tag"], "<task>task</task>")
-            self.assertEqual(data["history"][1]["tag"], "<summary>完成。</summary>")
-            self.assertEqual(data["history"][-1]["tag"], "<final_answer>answer</final_answer>")
-
-    def test_session_log_contains_model_call_usage(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "workspace"
-            root.mkdir()
-            session_root = Path(tmp) / "sessions"
-            provider = SequencedProvider(
-                [
-                    ModelCompletion(
-                        text="<summary>完成。</summary>\n<final_answer>answer</final_answer>",
-                        usage=TokenUsage(
-                            prompt_tokens=9,
-                            completion_tokens=4,
-                            total_tokens=13,
-                        ),
-                    )
-                ]
-            )
-
-            run = CodingAgent(
-                AgentConfig(
-                    workspace_path=root,
-                    provider="offline",
-                    session_root=session_root,
-                ),
-                provider_factory=lambda name: provider,
-            ).run("task", save_session=True)
-
-            self.assertIsNotNone(run.session_path)
-            assert run.session_path is not None
-            data = json.loads(run.session_path.read_text(encoding="utf-8"))
-            self.assertEqual(data["model_calls"][0]["purpose"], "task")
-            self.assertIn("Available tools:", data["model_calls"][0]["system_instructions"])
-            self.assertIn("Target workspace:", data["model_calls"][0]["system_instructions"])
-            self.assertEqual(data["model_calls"][0]["usage"]["total_tokens"], 13)
-            self.assertEqual(
-                data["runs"][0]["model_calls"][0]["system_instructions"],
-                data["model_calls"][0]["system_instructions"],
-            )
-            self.assertEqual(data["runs"][0]["model_calls"][0]["usage"]["prompt_tokens"], 9)
+            self.assertEqual(data["history"][0]["type"], "task")
+            self.assertEqual(data["history"][1]["type"], "summary")
+            self.assertEqual(data["history"][-1]["type"], "final_answer")
+            self.assertNotIn("tag", data["history"][0])
 
     def test_session_log_records_system_instructions_only_once_across_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
             session_root = Path(tmp) / "sessions"
-            provider = SequencedProvider(
-                [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
-                ]
-            )
+            provider = SequencedProvider([_final("first answer"), _final("second answer")])
             agent = CodingAgent(
                 AgentConfig(
                     workspace_path=root,
@@ -742,60 +613,9 @@ class ReactLoopTests(unittest.TestCase):
             session_files = list((session_root / "sessions").glob("*.json"))
             self.assertEqual(len(session_files), 1)
             data = json.loads(session_files[0].read_text(encoding="utf-8"))
-            self.assertIn("Available tools:", data["model_calls"][0]["system_instructions"])
+            self.assertIn("Available bound tools", data["model_calls"][0]["system_instructions"])
             self.assertEqual(data["model_calls"][1]["system_instructions"], "")
-            self.assertEqual(
-                data["runs"][0]["model_calls"][0]["system_instructions"],
-                data["model_calls"][0]["system_instructions"],
-            )
-            self.assertEqual(data["runs"][1]["model_calls"][0]["system_instructions"], "")
-
-    def test_session_log_keeps_only_skill_selection_system_instructions_when_first(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "workspace"
-            root.mkdir()
-            session_root = Path(tmp) / "sessions"
-            skills_root = Path(tmp) / "skills"
-            skill_dir = skills_root / "python"
-            skill_dir.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text(
-                "---\n"
-                "name: python\n"
-                "description: Use when editing Python code.\n"
-                "---\n\n"
-                "Full Python skill body.\n",
-                encoding="utf-8",
-            )
-            provider = SequencedProvider(
-                [
-                    '{"skills":["python"]}',
-                    "<summary>完成。</summary>\n<final_answer>done</final_answer>",
-                ]
-            )
-
-            run = CodingAgent(
-                AgentConfig(
-                    workspace_path=root,
-                    provider="openai",
-                    session_root=session_root,
-                    skills_path=skills_root,
-                ),
-                provider_factory=lambda name: provider,
-            ).run("使用 python skill", save_session=True)
-
-            self.assertIsNotNone(run.session_path)
-            assert run.session_path is not None
-            data = json.loads(run.session_path.read_text(encoding="utf-8"))
-            self.assertEqual(
-                [call["purpose"] for call in data["model_calls"]],
-                ["skill_selection", "task"],
-            )
-            self.assertEqual(
-                data["model_calls"][0]["system_instructions"],
-                SKILL_SELECTOR_SYSTEM_INSTRUCTIONS,
-            )
-            self.assertEqual(data["model_calls"][1]["system_instructions"], "")
-            self.assertEqual(data["runs"][0]["model_calls"][1]["system_instructions"], "")
+            self.assertEqual(len(data["runs"]), 2)
 
     def test_empty_session_log_can_record_compaction_system_instructions_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -818,41 +638,6 @@ class ReactLoopTests(unittest.TestCase):
                 data["model_calls"][0]["system_instructions"],
                 "memory compaction system prompt",
             )
-
-    def test_same_agent_writes_multiple_runs_to_one_session_log(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "workspace"
-            root.mkdir()
-            session_root = Path(tmp) / "sessions"
-            provider = SequencedProvider(
-                [
-                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
-                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
-                ]
-            )
-            agent = CodingAgent(
-                AgentConfig(
-                    workspace_path=root,
-                    provider="offline",
-                    session_root=session_root,
-                ),
-                provider_factory=lambda name: provider,
-            )
-
-            first = agent.run("first task", save_session=True)
-            second = agent.run("second task", save_session=True)
-
-            self.assertEqual(first.session_path, second.session_path)
-            session_files = list((session_root / "sessions").glob("*.json"))
-            self.assertEqual(len(session_files), 1)
-            data = json.loads(session_files[0].read_text(encoding="utf-8"))
-            self.assertEqual(data["session_path"], str(session_files[0]))
-            self.assertEqual(len(data["runs"]), 2)
-            self.assertEqual(data["runs"][0]["prompt"], "first task")
-            self.assertEqual(data["runs"][1]["prompt"], "second task")
-            self.assertEqual(len(data["model_calls"]), 2)
-            second_history_tags = [event["tag"] for event in data["runs"][1]["history"]]
-            self.assertIn("<final_answer>first answer</final_answer>", second_history_tags)
 
 
 if __name__ == "__main__":

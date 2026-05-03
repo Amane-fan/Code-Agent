@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+
+from langchain_core.tools import BaseTool, tool
 
 from code_agent.models import ToolResult
 from code_agent.security import ensure_within_workspace, is_sensitive_path, redact_secrets
-from code_agent.tools.base import JsonSchema, Tool, reject_args, required_str
+from code_agent.tools.base import JsonSchema, ToolContext
 
 
 TEXT_PATH_SCHEMA: JsonSchema = {
@@ -144,124 +145,37 @@ class FileTools:
         return ToolResult("grep_search", True, output=redact_secrets("\n".join(matches)))
 
 
-class ReadFileTool(Tool):
-    name = "read_file"
-    description = "Read one non-sensitive UTF-8 text file inside the workspace."
-    parameters_schema: ClassVar[JsonSchema] = TEXT_PATH_SCHEMA
-    returns_schema: ClassVar[JsonSchema] = {
-        **FILE_RESULT_SCHEMA,
-        "description": "Returns redacted file contents in output and metadata.path.",
-    }
+def create_tools(context: ToolContext) -> list[BaseTool]:
+    files = FileTools(context.workspace_root)
 
-    def run(self, args: dict[str, Any]) -> ToolResult:
-        return FileTools(self.context.workspace_root).read(required_str(self.name, args, "path"))
+    @tool("read_file")
+    def read_file(path: str) -> ToolResult:
+        """Read one non-sensitive UTF-8 text file inside the workspace."""
 
+        return files.read(path)
 
-class WriteFileTool(Tool):
-    name = "write_file"
-    description = "Create or overwrite one non-sensitive UTF-8 text file inside the workspace."
-    parameters_schema: ClassVar[JsonSchema] = {
-        "type": "object",
-        "properties": {
-            "path": TEXT_PATH_SCHEMA["properties"]["path"],
-            "content": {"type": "string", "description": "UTF-8 text content to write."},
-        },
-        "required": ["path", "content"],
-        "additionalProperties": False,
-    }
-    returns_schema: ClassVar[JsonSchema] = {
-        **FILE_RESULT_SCHEMA,
-        "description": "Returns the written path and byte count in output plus metadata.path.",
-    }
+    @tool("write_file")
+    def write_file(path: str, content: str) -> ToolResult:
+        """Create or overwrite one non-sensitive UTF-8 text file inside the workspace."""
 
-    def run(self, args: dict[str, Any]) -> ToolResult:
-        files = FileTools(self.context.workspace_root)
-        return files.write(
-            required_str(self.name, args, "path"),
-            required_str(self.name, args, "content"),
-        )
+        return files.write(path, content)
 
+    @tool("edit_file")
+    def edit_file(path: str, old_text: str, new_text: str) -> ToolResult:
+        """Replace text in one non-sensitive UTF-8 text file inside the workspace."""
 
-class EditFileTool(Tool):
-    name = "edit_file"
-    description = "Replace text in one non-sensitive UTF-8 text file inside the workspace."
-    parameters_schema: ClassVar[JsonSchema] = {
-        "type": "object",
-        "properties": {
-            "path": TEXT_PATH_SCHEMA["properties"]["path"],
-            "old_text": {
-                "type": "string",
-                "description": "Exact text to replace. It must match exactly once.",
-            },
-            "new_text": {"type": "string", "description": "Replacement text."},
-        },
-        "required": ["path", "old_text", "new_text"],
-        "additionalProperties": False,
-    }
-    returns_schema: ClassVar[JsonSchema] = {
-        **FILE_RESULT_SCHEMA,
-        "description": (
-            "Returns an edit confirmation in output and metadata.path. old_text must match "
-            "exactly once; otherwise ok is false and error explains the match problem."
-        ),
-    }
+        return files.edit(path, old_text, new_text)
 
-    def run(self, args: dict[str, Any]) -> ToolResult:
-        files = FileTools(self.context.workspace_root)
-        return files.edit(
-            required_str(self.name, args, "path"),
-            required_str(self.name, args, "old_text"),
-            required_str(self.name, args, "new_text"),
-        )
+    @tool("list_files")
+    def list_files() -> ToolResult:
+        """List non-sensitive files inside the workspace."""
 
+        return files.list()
 
-class ListFilesTool(Tool):
-    name = "list_files"
-    description = "List non-sensitive files inside the workspace."
-    parameters_schema: ClassVar[JsonSchema] = {}
-    returns_schema: ClassVar[JsonSchema] = {
-        "type": "object",
-        "description": (
-            "Returns newline-separated relative paths in output. Sensitive files and skipped "
-            "directories are omitted."
-        ),
-        "properties": {
-            "output": {"type": "string", "description": "Newline-separated relative paths."},
-            "error": {"type": "string"},
-            "metadata": {"type": "object"},
-        },
-    }
+    @tool("grep_search")
+    def grep_search(pattern: str) -> ToolResult:
+        """Search non-sensitive text files inside the workspace, case-insensitively."""
 
-    def run(self, args: dict[str, Any]) -> ToolResult:
-        reject_args(self.name, args)
-        return FileTools(self.context.workspace_root).list()
+        return files.search(pattern)
 
-
-class GrepSearchTool(Tool):
-    name = "grep_search"
-    description = "Search non-sensitive text files inside the workspace, case-insensitively."
-    parameters_schema: ClassVar[JsonSchema] = {
-        "type": "object",
-        "properties": {
-            "pattern": {"type": "string", "description": "Case-insensitive text to find."},
-        },
-        "required": ["pattern"],
-        "additionalProperties": False,
-    }
-    returns_schema: ClassVar[JsonSchema] = {
-        "type": "object",
-        "description": (
-            "Returns matching lines in output using path:line: text format. Secret-looking "
-            "values are redacted."
-        ),
-        "properties": {
-            "output": {"type": "string", "description": "Matches in path:line: text format."},
-            "error": {"type": "string"},
-            "metadata": {"type": "object"},
-        },
-    }
-
-    def run(self, args: dict[str, Any]) -> ToolResult:
-        return FileTools(self.context.workspace_root).search(
-            required_str(self.name, args, "pattern")
-        )
+    return [read_file, write_file, edit_file, list_files, grep_search]
