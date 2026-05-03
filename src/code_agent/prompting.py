@@ -3,8 +3,9 @@ from __future__ import annotations
 from html import escape
 from importlib.resources import files
 from pathlib import Path
+from typing import Sequence
 
-from code_agent.skills import SkillRegistry
+from code_agent.skills import LoadedSkill, SkillRegistry
 from code_agent.tools import ToolRegistry
 
 
@@ -15,15 +16,22 @@ def build_system_instructions(
     *,
     tool_registry: ToolRegistry,
     skill_registry: SkillRegistry,
+    loaded_skills: Sequence[LoadedSkill] | None = None,
     workspace_root: Path | None = None,
     base_instructions: str = BASE_SYSTEM_INSTRUCTIONS,
 ) -> str:
-    """将静态系统规则与启动时发现的工具、skill 元数据合成最终 instructions。"""
+    """将静态系统规则、工具、skill 元数据和已选 skill 正文合成最终 instructions。"""
 
     sections = [base_instructions.strip()]
     if workspace_root is not None:
         sections.append(_render_workspace(workspace_root))
-    sections.extend([_render_tools(tool_registry), _render_skills(skill_registry)])
+    sections.extend(
+        [
+            _render_tools(tool_registry),
+            _render_skills(skill_registry),
+            _render_loaded_skills(loaded_skills or []),
+        ]
+    )
     return "\n\n".join(sections)
 
 
@@ -48,9 +56,10 @@ def _render_skills(skill_registry: SkillRegistry) -> str:
     lines = [
         "Available skills:",
         (
-            "Only skill metadata is loaded at startup. If a listed skill is relevant, "
-            'call load_skill with {"name":"skill_name"} and wait for the observation '
-            "before relying on the full instructions."
+            "Skill metadata is listed here for visibility. Relevant full skill instructions "
+            "are selected before the main task and included in <loaded_skills>. Use "
+            "load_skill_resources only for supporting files explicitly referenced by a loaded "
+            "skill."
         ),
         "<skills>",
     ]
@@ -69,4 +78,22 @@ def _render_skills(skill_registry: SkillRegistry) -> str:
             ]
         )
     lines.append("</skills>")
+    return "\n".join(lines)
+
+
+def _render_loaded_skills(loaded_skills: Sequence[LoadedSkill]) -> str:
+    lines = ["Loaded skills for this task:", "<loaded_skills>"]
+    for skill in loaded_skills:
+        lines.extend(
+            [
+                "<skill>",
+                f"  <name>{escape(skill.metadata.name)}</name>",
+                f"  <path>{escape(str(skill.path))}</path>",
+                "  <content>",
+                skill.content,
+                "  </content>",
+                "</skill>",
+            ]
+        )
+    lines.append("</loaded_skills>")
     return "\n".join(lines)

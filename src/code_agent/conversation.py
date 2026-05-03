@@ -109,6 +109,7 @@ class ConversationSession:
         events: list[AgentEvent],
     ) -> tuple[str, bool, str, list[ModelCallUsage]]:
         fallback = _fallback_summary(events)
+        system_instructions = _provider_system_instructions(provider)
         if provider.name == "offline":
             return fallback, True, "offline provider does not summarize memory", []
         try:
@@ -129,6 +130,7 @@ class ConversationSession:
                 purpose="compaction",
                 ok=True,
                 usage=completion.usage,
+                system_instructions=system_instructions,
             )
             summary = _summary_from_response(completion.text)
             if not summary:
@@ -146,6 +148,7 @@ class ConversationSession:
                         purpose="compaction",
                         ok=False,
                         error=str(exc),
+                        system_instructions=system_instructions,
                     )
                 ],
             )
@@ -171,6 +174,13 @@ def _normalize_completion(response: str | ModelCompletion) -> ModelCompletion:
     if isinstance(response, ModelCompletion):
         return response
     return ModelCompletion(text=response)
+
+
+def _provider_system_instructions(provider: CompletionProvider) -> str:
+    value = getattr(provider, "system_instructions", "")
+    if isinstance(value, str):
+        return value
+    return ""
 
 
 def _extract_tag(text: str, tag: str) -> str:

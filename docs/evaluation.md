@@ -31,6 +31,7 @@
 - 验证 `/memory`、`/compact`、`/clear` 在交互窗口内按预期工作。
 - 验证同一交互窗口内的多轮运行写入同一份 JSON 日志，并出现在 `runs` 列表中。
 - 验证普通任务和 `/compact` 的模型调用 token usage 会显示在 CLI，并写入 session JSON 顶层 `model_calls`。
+- 验证 session JSON 的顶层 `model_calls` 和 `runs[*].model_calls` 只在每个会话第一次非空 `system_instructions` 出现时保留完整内容。
 - 使用 OpenAI-backed 交互完成一次不应用补丁的问答。
 - 在一次性 fixture 中生成补丁，分别验证输入 `n` 不应用、输入 `y` 应用。
 - 验证 workspace 外路径和敏感路径补丁会被拒绝。

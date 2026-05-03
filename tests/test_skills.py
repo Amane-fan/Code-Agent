@@ -8,10 +8,11 @@ from code_agent.skills import SkillRegistry
 from code_agent.tools import create_workspace_tool_registry
 
 
-def _write_skill(skills_root: Path, dirname: str, content: str) -> None:
+def _write_skill(skills_root: Path, dirname: str, content: str) -> Path:
     skill_dir = skills_root / dirname
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+    return skill_dir
 
 
 class SkillRegistryTests(unittest.TestCase):
@@ -76,12 +77,12 @@ class SkillRegistryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing required metadata"):
                 SkillRegistry.from_directory(skills_root)
 
-    def test_load_skill_tool_returns_full_skill_content(self) -> None:
+    def test_load_skill_resources_tool_loads_supporting_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
             skills_root = Path(tmp) / "skills"
-            _write_skill(
+            skill_dir = _write_skill(
                 skills_root,
                 "python",
                 "---\n"
@@ -90,17 +91,82 @@ class SkillRegistryTests(unittest.TestCase):
                 "---\n\n"
                 "Full skill instructions.\n",
             )
+            (skill_dir / "references").mkdir()
+            (skill_dir / "resources").mkdir()
+            (skill_dir / "references" / "guide.md").write_text("Guide text.\n", encoding="utf-8")
+            (skill_dir / "resources" / "template.txt").write_text(
+                "api_key=abcdefghijklmnop\n",
+                encoding="utf-8",
+            )
             skill_registry = SkillRegistry.from_directory(skills_root)
             tool_registry = create_workspace_tool_registry(root, skill_registry=skill_registry)
 
-            loaded = tool_registry.execute("load_skill", {"name": "python"})
-            missing = tool_registry.execute("load_skill", {"name": "missing"})
+            loaded = tool_registry.execute(
+                "load_skill_resources",
+                {
+                    "name": "python",
+                    "paths": ["references/guide.md", "resources/template.txt"],
+                },
+            )
 
             self.assertTrue(loaded.ok)
-            self.assertEqual(loaded.name, "load_skill")
-            self.assertIn("Full skill instructions.", loaded.output)
-            self.assertFalse(missing.ok)
-            self.assertIn("unknown skill", missing.error)
+            self.assertEqual(loaded.name, "load_skill_resources")
+            self.assertIn("--- references/guide.md ---\nGuide text.", loaded.output)
+            self.assertIn("--- resources/template.txt ---", loaded.output)
+            self.assertIn("api_key=[REDACTED]", loaded.output)
+
+    def test_load_skill_resources_tool_rejects_invalid_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            skills_root = Path(tmp) / "skills"
+            skill_dir = _write_skill(
+                skills_root,
+                "python",
+                "---\n"
+                "name: python\n"
+                "description: Use when editing Python code.\n"
+                "---\n\n"
+                "Full skill instructions.\n",
+            )
+            (skill_dir / "references").mkdir()
+            (skill_dir / "resources").mkdir()
+            (skill_dir / "references" / "guide.md").write_text("Guide text.\n", encoding="utf-8")
+            (skill_dir / "root.txt").write_text("Root file.\n", encoding="utf-8")
+            skill_registry = SkillRegistry.from_directory(skills_root)
+            tool_registry = create_workspace_tool_registry(root, skill_registry=skill_registry)
+
+            invalid_cases = [
+                ("missing", ["references/guide.md"], "unknown skill"),
+                ("python", ["/tmp/guide.md"], "must be relative"),
+                ("python", ["references/../root.txt"], "may not contain '..'"),
+                ("python", ["root.txt"], "must start with references/ or resources/"),
+                ("python", ["references"], "must start with references/ or resources/"),
+                ("python", ["references/missing.md"], "does not exist"),
+                ("python", ["resources/"], "directory"),
+                ("python", ["SKILL.md"], "SKILL.md"),
+                ("python", ["references/SKILL.md"], "SKILL.md"),
+            ]
+            for name, paths, expected_error in invalid_cases:
+                with self.subTest(name=name, paths=paths):
+                    result = tool_registry.execute(
+                        "load_skill_resources",
+                        {"name": name, "paths": paths},
+                    )
+                    self.assertFalse(result.ok)
+                    self.assertEqual(result.output, "")
+                    self.assertIn(expected_error, result.error)
+
+    def test_load_skill_tool_is_not_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            tool_registry = create_workspace_tool_registry(root, skill_registry=SkillRegistry.empty())
+
+            result = tool_registry.execute("load_skill", {"name": "python"})
+
+            self.assertFalse(result.ok)
+            self.assertIn("unknown tool", result.error)
 
 
 if __name__ == "__main__":

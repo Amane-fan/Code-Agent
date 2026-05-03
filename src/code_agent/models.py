@@ -71,6 +71,7 @@ class ModelCallUsage:
     ok: bool
     usage: TokenUsage | None = None
     error: str = ""
+    system_instructions: str = ""
 
 
 @dataclass(frozen=True)

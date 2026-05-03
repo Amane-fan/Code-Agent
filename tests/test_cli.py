@@ -59,7 +59,9 @@ class CliTests(unittest.TestCase):
             root = Path(tmp)
             (root / "README.md").write_text("# Demo\n", encoding="utf-8")
             stdout = StringIO()
-            provider = FakeProvider()
+            provider = FakeProvider(
+                ['{"skills":[]}', "<summary>完成。</summary>\n<final_answer>default provider response</final_answer>"]
+            )
             with (
                 patch("code_agent.cli._read_input", side_effect=["总结项目", "/quit"]),
                 patch("code_agent.agent.make_provider", return_value=provider) as make_provider,
@@ -69,7 +71,8 @@ class CliTests(unittest.TestCase):
                 exit_code = main(["--workspace", str(root), "--no-session"])
 
             self.assertEqual(exit_code, 0)
-            make_provider.assert_called_once_with("openai", system_instructions=ANY)
+            self.assertEqual(make_provider.call_count, 2)
+            make_provider.assert_any_call("openai", system_instructions=ANY)
             self.assertIn("default provider response", stdout.getvalue())
             self.assertIn("Task", stdout.getvalue())
             self.assertIn("总结项目", stdout.getvalue())
@@ -96,7 +99,7 @@ class CliTests(unittest.TestCase):
                 redirect_stdout(StringIO()),
                 redirect_stderr(StringIO()),
             ):
-                exit_code = main(["--workspace", str(root), "--no-session"])
+                exit_code = main(["--workspace", str(root), "--provider", "offline", "--no-session"])
 
             self.assertEqual(exit_code, 0)
             self.assertIn("<final_answer>first answer</final_answer>", provider.prompts[1])
@@ -125,7 +128,7 @@ class CliTests(unittest.TestCase):
                 redirect_stdout(stdout),
                 redirect_stderr(StringIO()),
             ):
-                exit_code = main(["--workspace", str(root), "--no-session"])
+                exit_code = main(["--workspace", str(root), "--provider", "offline", "--no-session"])
 
             self.assertEqual(exit_code, 0)
             self.assertIn("Compacted memory", stdout.getvalue())
@@ -178,7 +181,7 @@ class CliTests(unittest.TestCase):
                 redirect_stdout(stdout),
                 redirect_stderr(StringIO()),
             ):
-                exit_code = main(["--workspace", str(root), "--no-session"])
+                exit_code = main(["--workspace", str(root), "--provider", "offline", "--no-session"])
 
             self.assertEqual(exit_code, 0)
             self.assertFalse((root / "out.txt").exists())
@@ -205,7 +208,7 @@ class CliTests(unittest.TestCase):
                 redirect_stdout(stdout),
                 redirect_stderr(StringIO()),
             ):
-                exit_code = main(["--workspace", str(root), "--no-session"])
+                exit_code = main(["--workspace", str(root), "--provider", "offline", "--no-session"])
 
             self.assertEqual(exit_code, 0)
             self.assertEqual((root / "out.txt").read_text(encoding="utf-8"), "hello")

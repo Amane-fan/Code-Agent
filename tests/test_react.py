@@ -4,26 +4,51 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from langgraph.graph import StateGraph
 
 from code_agent.agent import CodingAgent
 from code_agent.config import AgentConfig
-from code_agent.models import ModelCompletion, TokenUsage, WorkspaceContext
+from code_agent.models import ModelCallUsage, ModelCompletion, TokenUsage, WorkspaceContext
+from code_agent.session import SessionStore
+from code_agent.skill_selection import SKILL_SELECTOR_SYSTEM_INSTRUCTIONS
 
 
 class SequencedProvider:
     name = "fake"
 
-    def __init__(self, responses: list[str | ModelCompletion]) -> None:
+    def __init__(
+        self,
+        responses: list[str | ModelCompletion],
+        *,
+        system_instructions: str = "",
+    ) -> None:
         self.responses = responses
         self.prompts: list[str] = []
+        self.system_instructions = system_instructions
 
     def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str | ModelCompletion:
         self.prompts.append(prompt)
         if not self.responses:
             raise AssertionError("provider called too many times")
         return self.responses.pop(0)
+
+
+class FailingOnceProvider:
+    name = "fake"
+
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.prompts: list[str] = []
+        self.fail_next = True
+
+    def complete(self, prompt: str, context: WorkspaceContext, *, model: str) -> str:
+        self.prompts.append(prompt)
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("selector unavailable")
+        return self.response
 
 
 class ReactLoopTests(unittest.TestCase):
@@ -143,7 +168,91 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(run.history[-1].kind, "final_answer")
             self.assertEqual(run.history[-1].content, "我是 Code Agent。")
 
-    def test_load_skill_observation_is_appended_to_next_model_call(self) -> None:
+    def test_skill_selection_model_call_precedes_main_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            (root / "workspace-only.txt").write_text("workspace content must stay out", encoding="utf-8")
+            skills_root = Path(tmp) / "skills"
+            skill_dir = skills_root / "python"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: python\n"
+                "description: Use when editing Python code.\n"
+                "---\n\n"
+                "Full Python skill body.\n",
+                encoding="utf-8",
+            )
+            provider = SequencedProvider(
+                [
+                    ModelCompletion(
+                        text='{"skills":["python"]}',
+                        usage=TokenUsage(prompt_tokens=3, completion_tokens=2, total_tokens=5),
+                    ),
+                    "<summary>完成。</summary>\n<final_answer>skill selected</final_answer>",
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="openai", skills_path=skills_root),
+                provider_factory=lambda name: provider,
+            ).run("使用 python skill", save_session=False)
+
+            self.assertEqual(run.final_answer, "skill selected")
+            self.assertEqual([call.purpose for call in run.model_calls], ["skill_selection", "task"])
+            self.assertTrue(run.model_calls[0].ok)
+            self.assertEqual(
+                run.model_calls[0].system_instructions,
+                SKILL_SELECTOR_SYSTEM_INSTRUCTIONS,
+            )
+            self.assertIn("Full Python skill body.", run.model_calls[1].system_instructions)
+            selection_usage = run.model_calls[0].usage
+            assert selection_usage is not None
+            self.assertEqual(selection_usage.total_tokens, 5)
+            self.assertIn("Available skills JSON", provider.prompts[0])
+            self.assertIn('"name": "python"', provider.prompts[0])
+            self.assertIn("<task>使用 python skill</task>", provider.prompts[0])
+            self.assertNotIn("workspace content must stay out", provider.prompts[0])
+
+    def test_selected_skill_body_enters_main_provider_system_instructions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            skills_root = Path(tmp) / "skills"
+            skill_dir = skills_root / "python"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: python\n"
+                "description: Use when editing Python code.\n"
+                "---\n\n"
+                "Full Python skill body.\n",
+                encoding="utf-8",
+            )
+            selector_provider = SequencedProvider(['{"skills":["python"]}'])
+            task_provider = SequencedProvider(
+                ["<summary>完成。</summary>\n<final_answer>done</final_answer>"]
+            )
+            captured_system_instructions: list[str | None] = []
+
+            def make_fake_provider(name: str, *, system_instructions: str | None = None) -> SequencedProvider:
+                self.assertEqual(name, "openai")
+                captured_system_instructions.append(system_instructions)
+                return selector_provider if len(captured_system_instructions) == 1 else task_provider
+
+            with patch("code_agent.agent.make_provider", side_effect=make_fake_provider):
+                run = CodingAgent(
+                    AgentConfig(workspace_path=root, provider="openai", skills_path=skills_root)
+                ).run("使用 python skill", save_session=False)
+
+            self.assertEqual(run.final_answer, "done")
+            self.assertEqual(len(captured_system_instructions), 2)
+            self.assertNotIn("Full Python skill body.", captured_system_instructions[0] or "")
+            self.assertIn("<loaded_skills>", captured_system_instructions[1] or "")
+            self.assertIn("Full Python skill body.", captured_system_instructions[1] or "")
+
+    def test_skill_selection_failure_continues_without_loaded_skill(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
@@ -160,20 +269,88 @@ class ReactLoopTests(unittest.TestCase):
             )
             provider = SequencedProvider(
                 [
-                    '<summary>需要加载技能。</summary>\n'
-                    '<action>{"tool":"load_skill","args":{"name":"python"}}</action>',
-                    "<summary>已经拿到技能。</summary>\n<final_answer>skill loaded</final_answer>",
+                    "not json",
+                    "<summary>完成。</summary>\n<final_answer>continued</final_answer>",
                 ]
             )
 
             run = CodingAgent(
-                AgentConfig(workspace_path=root, provider="offline", skills_path=skills_root),
+                AgentConfig(workspace_path=root, provider="openai", skills_path=skills_root),
                 provider_factory=lambda name: provider,
-            ).run("使用 python skill", save_session=False)
+            ).run("task", save_session=False)
 
-            self.assertEqual(run.final_answer, "skill loaded")
-            self.assertIn("Full Python skill body.", provider.prompts[1])
-            self.assertIn('"name": "load_skill"', provider.prompts[1])
+            self.assertEqual(run.final_answer, "continued")
+            self.assertEqual([call.purpose for call in run.model_calls], ["skill_selection", "task"])
+            self.assertFalse(run.model_calls[0].ok)
+            self.assertIn("invalid skill selection JSON", run.model_calls[0].error)
+            self.assertEqual(
+                run.model_calls[0].system_instructions,
+                SKILL_SELECTOR_SYSTEM_INSTRUCTIONS,
+            )
+
+    def test_skill_selection_provider_error_continues_without_loaded_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            skills_root = Path(tmp) / "skills"
+            skill_dir = skills_root / "python"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: python\n"
+                "description: Use when editing Python code.\n"
+                "---\n\n"
+                "Full Python skill body.\n",
+                encoding="utf-8",
+            )
+            provider = FailingOnceProvider(
+                "<summary>完成。</summary>\n<final_answer>continued</final_answer>"
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="openai", skills_path=skills_root),
+                provider_factory=lambda name: provider,
+            ).run("task", save_session=False)
+
+            self.assertEqual(run.final_answer, "continued")
+            self.assertEqual([call.purpose for call in run.model_calls], ["skill_selection", "task"])
+            self.assertFalse(run.model_calls[0].ok)
+            self.assertIn("selector unavailable", run.model_calls[0].error)
+            self.assertEqual(
+                run.model_calls[0].system_instructions,
+                SKILL_SELECTOR_SYSTEM_INSTRUCTIONS,
+            )
+
+    def test_skill_selection_ignores_unknown_skill_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            skills_root = Path(tmp) / "skills"
+            skill_dir = skills_root / "python"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: python\n"
+                "description: Use when editing Python code.\n"
+                "---\n\n"
+                "Full Python skill body.\n",
+                encoding="utf-8",
+            )
+            provider = SequencedProvider(
+                [
+                    '{"skills":["missing","python"]}',
+                    "<summary>完成。</summary>\n<final_answer>continued</final_answer>",
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(workspace_path=root, provider="openai", skills_path=skills_root),
+                provider_factory=lambda name: provider,
+            ).run("task", save_session=False)
+
+            self.assertEqual(run.final_answer, "continued")
+            self.assertTrue(run.model_calls[0].ok)
+            self.assertIn("ignored unknown skills: missing", run.model_calls[0].error)
 
     def test_same_agent_remembers_previous_turns_but_new_agent_starts_clean(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -259,7 +436,8 @@ class ReactLoopTests(unittest.TestCase):
                             total_tokens=40,
                         ),
                     ),
-                ]
+                ],
+                system_instructions="memory compaction system prompt",
             )
             agent = CodingAgent(
                 AgentConfig(
@@ -276,6 +454,10 @@ class ReactLoopTests(unittest.TestCase):
             result = agent.compact_memory(save_session=True)
 
             self.assertEqual(result.model_calls[0].purpose, "compaction")
+            self.assertEqual(
+                result.model_calls[0].system_instructions,
+                "memory compaction system prompt",
+            )
             compact_usage = result.model_calls[0].usage
             assert compact_usage is not None
             self.assertEqual(compact_usage.total_tokens, 40)
@@ -283,6 +465,10 @@ class ReactLoopTests(unittest.TestCase):
             self.assertEqual(len(session_files), 1)
             data = json.loads(session_files[0].read_text(encoding="utf-8"))
             self.assertEqual(data["model_calls"][-1]["purpose"], "compaction")
+            self.assertEqual(
+                data["model_calls"][-1]["system_instructions"],
+                "",
+            )
             self.assertEqual(data["model_calls"][-1]["usage"]["total_tokens"], 40)
             self.assertEqual(len(data["runs"]), 3)
 
@@ -521,8 +707,117 @@ class ReactLoopTests(unittest.TestCase):
             assert run.session_path is not None
             data = json.loads(run.session_path.read_text(encoding="utf-8"))
             self.assertEqual(data["model_calls"][0]["purpose"], "task")
+            self.assertIn("Available tools:", data["model_calls"][0]["system_instructions"])
+            self.assertIn("Target workspace:", data["model_calls"][0]["system_instructions"])
             self.assertEqual(data["model_calls"][0]["usage"]["total_tokens"], 13)
+            self.assertEqual(
+                data["runs"][0]["model_calls"][0]["system_instructions"],
+                data["model_calls"][0]["system_instructions"],
+            )
             self.assertEqual(data["runs"][0]["model_calls"][0]["usage"]["prompt_tokens"], 9)
+
+    def test_session_log_records_system_instructions_only_once_across_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            session_root = Path(tmp) / "sessions"
+            provider = SequencedProvider(
+                [
+                    "<summary>完成。</summary>\n<final_answer>first answer</final_answer>",
+                    "<summary>完成。</summary>\n<final_answer>second answer</final_answer>",
+                ]
+            )
+            agent = CodingAgent(
+                AgentConfig(
+                    workspace_path=root,
+                    provider="offline",
+                    session_root=session_root,
+                ),
+                provider_factory=lambda name: provider,
+            )
+
+            agent.run("first task", save_session=True)
+            agent.run("second task", save_session=True)
+
+            session_files = list((session_root / "sessions").glob("*.json"))
+            self.assertEqual(len(session_files), 1)
+            data = json.loads(session_files[0].read_text(encoding="utf-8"))
+            self.assertIn("Available tools:", data["model_calls"][0]["system_instructions"])
+            self.assertEqual(data["model_calls"][1]["system_instructions"], "")
+            self.assertEqual(
+                data["runs"][0]["model_calls"][0]["system_instructions"],
+                data["model_calls"][0]["system_instructions"],
+            )
+            self.assertEqual(data["runs"][1]["model_calls"][0]["system_instructions"], "")
+
+    def test_session_log_keeps_only_skill_selection_system_instructions_when_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            session_root = Path(tmp) / "sessions"
+            skills_root = Path(tmp) / "skills"
+            skill_dir = skills_root / "python"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: python\n"
+                "description: Use when editing Python code.\n"
+                "---\n\n"
+                "Full Python skill body.\n",
+                encoding="utf-8",
+            )
+            provider = SequencedProvider(
+                [
+                    '{"skills":["python"]}',
+                    "<summary>完成。</summary>\n<final_answer>done</final_answer>",
+                ]
+            )
+
+            run = CodingAgent(
+                AgentConfig(
+                    workspace_path=root,
+                    provider="openai",
+                    session_root=session_root,
+                    skills_path=skills_root,
+                ),
+                provider_factory=lambda name: provider,
+            ).run("使用 python skill", save_session=True)
+
+            self.assertIsNotNone(run.session_path)
+            assert run.session_path is not None
+            data = json.loads(run.session_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [call["purpose"] for call in data["model_calls"]],
+                ["skill_selection", "task"],
+            )
+            self.assertEqual(
+                data["model_calls"][0]["system_instructions"],
+                SKILL_SELECTOR_SYSTEM_INSTRUCTIONS,
+            )
+            self.assertEqual(data["model_calls"][1]["system_instructions"], "")
+            self.assertEqual(data["runs"][0]["model_calls"][1]["system_instructions"], "")
+
+    def test_empty_session_log_can_record_compaction_system_instructions_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_store = SessionStore(Path(tmp) / "sessions")
+
+            session_path = session_store.append_model_calls(
+                [
+                    ModelCallUsage(
+                        provider="fake",
+                        model="test-model",
+                        purpose="compaction",
+                        ok=True,
+                        system_instructions="memory compaction system prompt",
+                    )
+                ]
+            )
+
+            data = json.loads(session_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                data["model_calls"][0]["system_instructions"],
+                "memory compaction system prompt",
+            )
 
     def test_same_agent_writes_multiple_runs_to_one_session_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

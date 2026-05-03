@@ -11,12 +11,13 @@ workspace。
 - 作为开发者，我可以用 `code-agent --workspace <dir>` 启动一个绑定到单一 workspace 的交互会话。
 - 作为开发者，我可以连续输入问题或修改请求，后续输入会继承当前窗口内的历史。
 - 作为开发者，我可以看到 Agent 的 `<memory>`、`<task>`、`<summary>`、`<action>`、`<observation>`、`<final_answer>` 行为日志。
-- 作为开发者，我可以看到每次模型调用的 token 消耗；如果 provider 没有返回 usage，则显示为 unknown。
+- 作为开发者，我可以在会话日志中审计每次模型调用的 token 消耗，并看到本会话第一次发送给 LLM 的系统提示词。
 - 作为开发者，我可以在历史过长前使用 `/compact` 手动压缩上下文，也可以让 Agent 自动压缩旧轮次。
 - 作为开发者，我可以用 `/memory` 查看当前压缩记忆，用 `/clear` 清空当前窗口记忆。
 - 作为开发者，我可以让模型通过 `read_file`、`write_file`、`edit_file`、`list_files`、`grep_search` 检查或修改文件。
 - 作为开发者，我可以在模型请求 `run_shell` 时手动确认是否执行命令。
-- 作为开发者，我可以让 Code-Agent 在启动时加载内置 skill 元数据，并让模型通过 `load_skill` 按需加载完整 skill。
+- 作为开发者，我可以让 Code-Agent 每轮自动选择相关内置 skill，并在主任务前加载选中的完整 `SKILL.md`。
+- 作为开发者，我可以让模型读取已选 skill 下 `references/` 或 `resources/` 中的附属资料。
 - 作为开发者，我可以确信目标 workspace 的 `.env` 不会影响 Agent 的模型配置或系统 prompt。
 
 ## 成功标准
@@ -31,5 +32,6 @@ workspace。
 - `.env` 等敏感文件不会进入模型上下文，也不能被文件工具直接读取或写入。
 - `run_shell` 每次执行前都需要用户确认。
 - 工具说明在启动时从工具注册表动态生成，系统 prompt 中不再硬编码具体工具清单。
-- 启动上下文只包含 skill 元数据；完整 skill 正文只能通过 `load_skill` 工具 observation 进入后续上下文。
-- 每个交互窗口可以保存为一份本地 JSON 会话日志，同一窗口内的多轮运行和模型调用 token usage 都写入该文件，便于审计和复盘。
+- 每轮主任务前会先记录一次 `skill_selection` 模型调用；离线模式、调用失败或 JSON 非法时不加载 skill 且主任务继续。
+- 主任务只包含本轮 selector 选中的 skill 正文；未选 skill 的完整内容不会进入上下文。
+- 每个交互窗口可以保存为一份本地 JSON 会话日志，同一窗口内的多轮运行、模型调用 token usage 和首次系统提示词都写入该文件，便于审计和复盘。

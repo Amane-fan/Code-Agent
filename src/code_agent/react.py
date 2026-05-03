@@ -57,6 +57,7 @@ class AgentGraphState(TypedDict):
     context: WorkspaceContext
     provider: ModelProvider
     model: str
+    system_instructions: str
     tool_registry: ToolRegistry
     event_logger: EventLogger | None
     max_iterations: int
@@ -78,10 +79,16 @@ def run_react_agent(
     session_store: SessionStore | None = None,
     skill_registry: SkillRegistry | None = None,
     tool_registry: ToolRegistry | None = None,
+    system_instructions: str | None = None,
 ) -> AgentRun:
     """执行一次 ReAct 任务，可接收窗口级历史作为模型输入前缀。"""
 
     provider = provider_factory(config.provider)
+    call_system_instructions = (
+        system_instructions
+        if system_instructions is not None
+        else _provider_system_instructions(provider)
+    )
     context = WorkspaceContext(
         root=config.workspace_root,
         prompt=prompt,
@@ -108,6 +115,7 @@ def run_react_agent(
                 "context": context,
                 "provider": provider,
                 "model": config.model,
+                "system_instructions": call_system_instructions,
                 "tool_registry": tools,
                 "event_logger": event_logger,
                 "max_iterations": config.max_iterations,
@@ -194,6 +202,7 @@ def _call_model_node(state: AgentGraphState) -> dict[str, Any]:
             purpose="task",
             ok=True,
             usage=completion.usage,
+            system_instructions=state["system_instructions"],
         )
     )
     parsed = _parse_response(completion.text)
@@ -314,6 +323,13 @@ def _normalize_completion(response: str | ModelCompletion) -> ModelCompletion:
     if isinstance(response, ModelCompletion):
         return response
     return ModelCompletion(text=response)
+
+
+def _provider_system_instructions(provider: ModelProvider) -> str:
+    value = getattr(provider, "system_instructions", "")
+    if isinstance(value, str):
+        return value
+    return ""
 
 
 def _parse_response(text: str) -> ParsedResponse:

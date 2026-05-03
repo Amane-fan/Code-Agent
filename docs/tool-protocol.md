@@ -51,14 +51,15 @@
 - `list_files({})`：列出 workspace 中的非敏感文件。
 - `grep_search({"pattern": "text"})`：在非敏感文件中执行大小写不敏感的文本搜索。
 - `run_shell({"command": "..."})`：经用户确认后，在 workspace 下通过 `/bin/bash -lc` 执行命令。
-- `load_skill({"name": "skill_name"})`：按名称加载启动时列出的完整 `SKILL.md` 内容。
+- `load_skill_resources({"name": "skill_name", "paths": ["references/guide.md"]})`：读取已安装 skill 下 `references/` 或 `resources/` 中的附属 UTF-8 文本资料。
 
 所有工具实现都绑定到启动时指定的 workspace 根目录。
 
 ## Skills
 
 启动时，Code-Agent 从自身受控的 skills 目录加载 `SKILL.md` 元数据，并把可用 skill 的名称和描述注入
-instructions。完整 skill 正文不会在启动时进入上下文。
+instructions。每轮主任务前会先执行一次独立的 `skill_selection` 模型调用，输入为当前用户问题、当前
+窗口 memory、近期完整轮次和 skill 元数据，不读取 workspace 文件。
 
 skill 元数据使用标签形式渲染，每个 `<skill>` 包含 `name` 和 `description`：
 
@@ -71,11 +72,16 @@ skill 元数据使用标签形式渲染，每个 `<skill>` 包含 `name` 和 `de
 </skills>
 ```
 
-如果模型判断需要某个 skill，应先调用：
+selector 必须返回严格 JSON：
 
 ```text
-<action>{"tool":"load_skill","args":{"name":"skill_name"}}</action>
+{"skills":["skill_name"]}
 ```
 
-工具 observation 的 `output` 会包含完整 skill 内容。未知 skill 会返回 `ok=false`，并在 metadata 中列出
-可用名称。
+每轮最多加载 3 个已知 skill。未知名称会被忽略并记录；provider 为 `offline`、selector 调用失败或 JSON
+非法时，不加载任何 skill，主任务继续执行。选中的完整 `SKILL.md` 会出现在主任务系统 instructions 的
+`<loaded_skills>` 区块中。
+
+`load_skill_resources` 只用于加载已选 skill 明确引用的附属资料。路径必须以 `references/` 或
+`resources/` 开头，并且不能是绝对路径、包含 `..`、指向目录、缺失文件、`SKILL.md` 或 skill 根目录文件。
+资源工具按请求顺序返回带标题的文本内容；任一文件失败时不会返回部分内容。

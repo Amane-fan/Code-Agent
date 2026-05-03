@@ -6,30 +6,32 @@
 - Conversation Session：保存当前终端窗口内的多轮历史、压缩摘要和近期完整轮次。
 - LangGraph ReAct Runner：为每条用户输入执行一次工具循环，用 `StateGraph` 编排模型调用、工具执行、上限保护和最终回答。
 - Provider 层：默认用 LangChain `ChatOpenAI` 包装 OpenAI-compatible chat model 调用，提取 provider 返回的 token usage，并保留确定性的离线模式。
-- Prompt 构建：基础系统 prompt 来自 `src/code_agent/prompts/system.md`，工具说明和 skill 元数据在启动时动态拼接。
-- Skill Registry：从 Code-Agent 自身 `skills/` 目录读取 `SKILL.md` 元数据，并由 `load_skill` 按需返回完整内容。
-- 工具层：每个工具继承 `Tool` 基类并声明描述、参数 schema、返回 schema 和执行实现；工具注册表启动时自动发现包内工具，默认包含文件、搜索、shell 和 `load_skill`。
-- 会话存储：每个交互窗口创建一份 JSON 日志，把同一窗口内的多轮运行追加到 `runs` 列表，并在顶层 `model_calls` 保存全部模型调用的 token usage。
+- Prompt 构建：基础系统 prompt 来自 `src/code_agent/prompts/system.md`，工具说明、skill 元数据和本轮已选 skill 正文会动态拼接。
+- Skill Registry：从 Code-Agent 自身 `skills/` 目录读取 `SKILL.md` 元数据，并供内部 selector 加载完整内容。
+- Skill Selector：每轮主任务前用独立模型调用选择最多 3 个相关 skill；失败、离线模式或非法 JSON 时跳过加载并继续主任务。
+- 工具层：每个工具继承 `Tool` 基类并声明描述、参数 schema、返回 schema 和执行实现；工具注册表启动时自动发现包内工具，默认包含文件、搜索、shell 和 `load_skill_resources`。
+- 会话存储：每个交互窗口创建一份 JSON 日志，把同一窗口内的多轮运行追加到 `runs` 列表，并在 `model_calls` 保存全部模型调用的 token usage；完整系统提示词仅在每个会话首次出现时保留一次。
 
 ## 数据流
 
 1. 用户运行 `code-agent --workspace /path/to/target-project`。
 2. CLI 进入交互式循环，等待 `code-agent>` 输入。
-3. `CodingAgent` 创建 Skill Registry 和工具注册表，并把动态工具说明、skill 元数据拼进 Provider instructions。
+3. `CodingAgent` 创建 Skill Registry 和工具注册表，并准备基础动态 instructions。
 4. 用户输入普通文本后，CLI 从 Conversation Session 取出当前窗口记忆和未压缩近期轮次。
-5. LangGraph Runner 在这些历史后追加新的 `<task>`，并把完整标签历史放入单次任务的 graph state。
-6. Provider 返回 `<summary>` 加 `<action>` 或 `<final_answer>`，同时尽量携带真实 token usage；缺失时记录为 unknown。
-7. 如果返回 `<action>`，Runner 通过 `execute_tool` 节点调用工具注册表，把结果作为 `<observation>` 追加到历史，然后回到 `call_model` 节点。
-8. 如果模型调用 `load_skill`，完整 `SKILL.md` 会作为 observation 进入下一轮模型输入。
-9. 如果返回 `<final_answer>`，Runner 到达 LangGraph `END`，把本轮运行写入当前窗口的同一份日志文件，并结束本次任务。
-10. 如果窗口历史超过上限，Conversation Session 把旧轮次压缩为 `<memory>`，并保留最近完整轮次；压缩调用的 token usage 会并入当前运行记录。
-11. 如果模型连续调用工具超过 20 轮，Runner 进入 `limit` 节点，生成错误型 `<final_answer>` 并结束。
+5. 非离线 provider 会先执行 `skill_selection` 模型调用，输入只包含当前用户问题、窗口记忆、近期完整轮次和 skill 元数据。
+6. `CodingAgent` 忽略未知 skill，最多加载 3 个已选 `SKILL.md`，再把其正文注入主 Provider 的 `<loaded_skills>` 区块。
+7. LangGraph Runner 在历史后追加新的 `<task>`，并把完整标签历史放入单次任务的 graph state。
+8. Provider 返回 `<summary>` 加 `<action>` 或 `<final_answer>`，同时尽量携带真实 token usage；缺失时记录为 unknown。
+9. 如果返回 `<action>`，Runner 通过 `execute_tool` 节点调用工具注册表，把结果作为 `<observation>` 追加到历史，然后回到 `call_model` 节点。
+10. 如果返回 `<final_answer>`，Runner 到达 LangGraph `END`，把本轮运行写入当前窗口的同一份日志文件，并结束本次任务。
+11. 如果窗口历史超过上限，Conversation Session 把旧轮次压缩为 `<memory>`，并保留最近完整轮次；压缩调用的 token usage 会并入当前运行记录。
+12. 如果模型连续调用工具超过 20 轮，Runner 进入 `limit` 节点，生成错误型 `<final_answer>` 并结束。
 
 ## 边界
 
 - `--workspace` 是 Agent 唯一可观察和可修改的目标代码边界。
 - 初始模型请求不自动包含文件内容；文件内容必须通过工具 observation 进入历史。
-- 初始模型请求只包含 skill 元数据，不包含完整 skill 正文；完整正文只能通过 `load_skill` observation 进入历史。
+- 主任务启动前只会获得本轮 selector 选中的完整 skill 正文；未选 skill 的正文不会进入主任务上下文。
 - 会话记忆只在当前终端进程内存在，退出后不会自动恢复。
 - 会话日志文件会保留同一窗口内的多轮运行；新建 `CodingAgent` 或重新启动 CLI 会创建新的日志文件。
 - `<memory>` 是压缩后的对话摘要，只作为模型输入上下文；模型不应自行输出 `<memory>`。

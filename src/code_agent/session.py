@@ -16,12 +16,14 @@ class SessionStore:
     session_path: Path | None = None
     runs: list[AgentRun] = field(default_factory=list)
     model_calls: list[ModelCallUsage] = field(default_factory=list)
+    _system_instructions_recorded: bool = False
 
     def save(self, run: AgentRun) -> Path:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         path = self._path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        saved_run = replace(run, session_path=path)
+        saved_model_calls = self._prepare_model_calls(run.model_calls)
+        saved_run = replace(run, session_path=path, model_calls=saved_model_calls)
         self.runs.append(saved_run)
         self.model_calls.extend(saved_run.model_calls)
         self._write(path)
@@ -31,9 +33,22 @@ class SessionStore:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         path = self._path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.model_calls.extend(model_calls)
+        self.model_calls.extend(self._prepare_model_calls(model_calls))
         self._write(path)
         return path
+
+    def _prepare_model_calls(self, model_calls: list[ModelCallUsage]) -> list[ModelCallUsage]:
+        prepared: list[ModelCallUsage] = []
+        for model_call in model_calls:
+            if not model_call.system_instructions:
+                prepared.append(model_call)
+                continue
+            if self._system_instructions_recorded:
+                prepared.append(replace(model_call, system_instructions=""))
+                continue
+            self._system_instructions_recorded = True
+            prepared.append(model_call)
+        return prepared
 
     def _path(self) -> Path:
         if self.session_path is None:

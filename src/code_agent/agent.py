@@ -5,12 +5,13 @@ from typing import Callable
 
 from code_agent.config import AgentConfig
 from code_agent.conversation import CompactionResult, ConversationSession
-from code_agent.models import AgentEvent, AgentRun, ModelCallUsage
+from code_agent.models import AgentEvent, AgentRun, ModelCallUsage, WorkspaceContext
 from code_agent.prompting import build_system_instructions
 from code_agent.providers import ModelProvider, make_provider
 from code_agent.react import ProviderFactory, run_react_agent
 from code_agent.session import SessionStore
-from code_agent.skills import SkillRegistry
+from code_agent.skill_selection import SKILL_SELECTOR_SYSTEM_INSTRUCTIONS, select_skills
+from code_agent.skills import LoadedSkill, SkillRegistry
 from code_agent.tools import create_workspace_tool_registry
 
 
@@ -55,8 +56,15 @@ class CodingAgent:
         event_logger: EventLogger | None = None,
         save_session: bool = True,
     ) -> AgentRun:
-        provider = self._make_provider()
         initial_history = self.conversation.initial_history()
+        loaded_skills, selection_model_calls = self._select_skills(prompt, initial_history)
+        task_system_instructions = build_system_instructions(
+            tool_registry=self.tool_registry,
+            skill_registry=self.skill_registry,
+            loaded_skills=loaded_skills,
+            workspace_root=self.config.workspace_root,
+        )
+        provider = self._make_provider(system_instructions=task_system_instructions)
         run = run_react_agent(
             self.config,
             prompt,
@@ -67,9 +75,10 @@ class CodingAgent:
             initial_history=initial_history,
             session_store=self.session_store,
             skill_registry=self.skill_registry,
+            system_instructions=task_system_instructions,
         )
         self.conversation.record_turn(run.history[len(initial_history) :])
-        model_calls = list(run.model_calls)
+        model_calls = [*selection_model_calls, *run.model_calls]
         if self.conversation.should_auto_compact():
             compaction = self.conversation.compact(provider)
             model_calls.extend(compaction.model_calls)
@@ -100,10 +109,34 @@ class CodingAgent:
     def clear_memory(self) -> None:
         self.conversation.clear()
 
-    def _make_provider(self) -> ModelProvider:
+    def _make_provider(self, *, system_instructions: str | None = None) -> ModelProvider:
         if self.provider_factory is not None:
             return self.provider_factory(self.config.provider)
         return make_provider(
             self.config.provider,
-            system_instructions=self.system_instructions,
+            system_instructions=system_instructions or self.system_instructions,
         )
+
+    def _select_skills(
+        self,
+        prompt: str,
+        initial_history: list[AgentEvent],
+    ) -> tuple[list[LoadedSkill], list[ModelCallUsage]]:
+        if self.config.provider.lower().strip() == "offline" or not self.skill_registry.names():
+            return [], []
+
+        provider = self._make_provider(system_instructions=SKILL_SELECTOR_SYSTEM_INSTRUCTIONS)
+        result = select_skills(
+            provider=provider,
+            model=self.config.model,
+            workspace_context=WorkspaceContext(
+                root=self.config.workspace_root,
+                prompt="skill selection",
+                git_status="",
+                files=[],
+            ),
+            user_prompt=prompt,
+            history=initial_history,
+            skill_registry=self.skill_registry,
+        )
+        return result.loaded_skills, result.model_calls

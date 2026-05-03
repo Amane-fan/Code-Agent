@@ -12,11 +12,11 @@ AI 编程系统的基础实现。
 - **单 workspace 隔离**：启动时必须通过 `--workspace` 指定目标目录，文件工具和 shell 工具都以该目录为边界。
 - **交互式任务循环**：在同一个 `code-agent>` 窗口内连续输入自然语言任务，后续任务会继承当前窗口记忆。
 - **LangGraph ReAct 编排**：每条任务由 `StateGraph` 驱动模型调用、工具执行、结果回传和终止判断。
-- **受控工具集**：内置文件读取、文件写入、文本替换、文件列表、文本搜索、shell 请求和 skill 加载工具。
+- **受控工具集**：内置文件读取、文件写入、文本替换、文件列表、文本搜索、shell 请求和 skill 资源加载工具。
 - **人工确认 shell 命令**：模型请求执行 shell 命令时，CLI 会先展示命令并等待用户确认。
 - **上下文压缩**：历史过长时可将较旧轮次压缩为 `<memory>`，同时保留近期完整事件。
-- **会话审计日志**：默认将交互窗口内的多轮运行和模型 token 消耗记录到本地 JSON 日志，便于排查和复盘。
-- **按需加载 skills**：启动上下文只包含 skill 元数据，完整 `SKILL.md` 只能通过 `load_skill` 工具进入模型上下文。
+- **会话审计日志**：默认将交互窗口内的多轮运行、模型 token 消耗和本会话首次系统提示词记录到本地 JSON 日志。
+- **自动选择 skills**：每轮任务前先由模型选择最多 3 个相关 skill，选中的完整 `SKILL.md` 会注入主任务 instructions。
 
 ## 运行要求
 
@@ -138,7 +138,7 @@ call_model/execute_tool -- max_iterations reached --> limit -> END
 - `list_files`：列出 workspace 内的非敏感文件。
 - `grep_search`：在 workspace 内执行大小写不敏感的文本搜索。
 - `run_shell`：在 workspace 中请求执行 shell 命令，并要求用户确认。
-- `load_skill`：按名称加载启动时已发现的完整 skill 指令。
+- `load_skill_resources`：读取已选 skill 下 `references/` 或 `resources/` 中的附属 UTF-8 文本资料。
 
 ## 架构概览
 
@@ -148,10 +148,10 @@ call_model/execute_tool -- max_iterations reached --> limit -> END
 - **Conversation Session**：维护当前窗口内的多轮历史、压缩摘要和近期完整轮次。
 - **LangGraph ReAct Runner**：编排模型调用、工具执行、最大轮次保护和最终回答。
 - **Provider 层**：封装 OpenAI-compatible chat model，提取真实 token usage，并提供确定性的离线模式。
-- **Prompt 构建**：加载基础系统 prompt，并动态拼接工具说明和 skill 元数据。
+- **Prompt 构建**：加载基础系统 prompt，并动态拼接工具说明、skill 元数据和本轮已选 skill 正文。
 - **Tool Registry**：统一注册工具执行逻辑和工具说明。
-- **Skill Registry**：从 Code Agent 自身受控目录读取 skill 元数据，并支持按需加载完整内容。
-- **Session Logging**：将每个交互窗口的运行历史和模型调用 token usage 写入本地 JSON 日志。
+- **Skill Registry**：从 Code Agent 自身受控目录读取 skill 元数据，并供内部 selector 加载完整内容。
+- **Session Logging**：将每个交互窗口的运行历史、模型调用 token usage 和首次系统提示词写入本地 JSON 日志。
 
 更详细的设计说明见 [架构说明](docs/architecture.md)。
 
