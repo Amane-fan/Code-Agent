@@ -11,6 +11,7 @@ from terminal_code_agent.graph import (
     route_model_result,
     route_tool_execute,
     route_tool_gate,
+    tool_repair,
 )
 
 
@@ -83,3 +84,21 @@ def test_plain_text_final_answer_does_not_need_json_repair(tmp_path: Path) -> No
 
     assert result["final_answer"] == "不是 JSON"
     assert len(model.calls) == 1
+
+
+def test_tool_repair_fallback_includes_tool_error() -> None:
+    result = tool_repair(
+        {
+            "tool_repair_attempts": 3,
+            "tool_error": {
+                "tool": "apply_patch",
+                "message": "patch 校验失败",
+                "hint": "请重新读取相关文件后生成可应用的 patch。",
+            },
+        },
+        settings=Settings(max_tool_repair_attempts=3),
+    )
+
+    assert result["force_final"] is True
+    assert "apply_patch 调用失败" in result["final_answer"]
+    assert "patch 校验失败" in result["final_answer"]

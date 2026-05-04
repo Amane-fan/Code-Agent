@@ -36,6 +36,9 @@ uv run python -m terminal_code_agent --workdir .
 - `--thread-id`：会话 ID，默认 `default`。
 - `--env-file`：配置文件路径，默认 `.env`。
 - `--log-level`：覆盖配置中的日志级别。
+- `--no-color`：禁用 Rich 彩色输出。
+
+CLI 启动时会显示当前 workdir、thread 和日志文件路径；审批请求和最终回答会用结构化终端面板展示。交互输入显式启用 `readline`，用于改善 backspace、Ctrl-H 和 Delete 等按键在不同终端中的兼容性。
 
 退出会话时输入 `exit` 或 `quit`。
 
@@ -82,6 +85,7 @@ agent> {"type":"final","answer":"..."}
 - `.env`、私钥、SSH key、云凭据、包管理凭据等敏感路径默认拒绝读取和写入。
 - `run_shell` 固定在 `workdir` 中执行，并拒绝明显危险命令。
 - 日志会脱敏并截断长文本。
+- 工具失败会把错误类型、提示和关键 stdout/stderr 摘要反馈给后续修复步骤。
 
 如果处理不可信仓库，建议在容器、虚拟机或受限用户下运行。
 

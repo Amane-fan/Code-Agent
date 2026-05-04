@@ -395,9 +395,16 @@ def observe(state: AgentState, *, settings: Settings) -> dict[str, Any]:
 def tool_repair(state: AgentState, *, settings: Settings) -> dict[str, Any]:
     attempts = state.get("tool_repair_attempts", 0)
     if attempts >= settings.max_tool_repair_attempts:
+        error = state.get("tool_error", {})
+        tool = str(error.get("tool", "工具"))
+        message = str(error.get("message", "工具调用失败"))
+        hint = str(error.get("hint", ""))
+        detail = f"{tool} 调用失败，已达到修复上限：{message}"
+        if hint:
+            detail = f"{detail}。建议：{hint}"
         return {
             "force_final": True,
-            "final_answer": fallback_answer("工具调用失败，已达到修复上限。"),
+            "final_answer": fallback_answer(detail),
         }
     prompt = TOOL_REPAIR_PROMPT.format(
         tool_error=json.dumps(state.get("tool_error", {}), ensure_ascii=False)

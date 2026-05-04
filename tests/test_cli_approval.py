@@ -1,6 +1,7 @@
 import json
 
-from terminal_code_agent.cli import ask_user_for_approval
+from terminal_code_agent import cli
+from terminal_code_agent.cli import ask_user_for_approval, configure_line_editor
 
 
 def test_approval_yes(monkeypatch) -> None:
@@ -34,3 +35,19 @@ def test_approval_edit(monkeypatch) -> None:
 
     assert result["decision"] == "approved"
     assert result["edited_tool_calls"][0]["name"] == "write_file"
+
+
+def test_configure_line_editor_binds_common_delete_keys(monkeypatch) -> None:
+    bindings: list[str] = []
+
+    class FakeReadline:
+        @staticmethod
+        def parse_and_bind(binding: str) -> None:
+            bindings.append(binding)
+
+    monkeypatch.setattr(cli, "readline", FakeReadline)
+
+    configure_line_editor()
+
+    assert '"\\C-h": backward-delete-char' in bindings
+    assert '"\\e[3~": delete-char' in bindings

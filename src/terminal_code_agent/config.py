@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     model_base_url: str | None = None
 
     token_budget_ratio: float = 0.85
-    max_tool_repair_attempts: int = 1
+    max_tool_repair_attempts: int = 3
     max_compact_attempts: int = 2
     max_context_chars_per_tool_result: int = 12000
     shell_timeout_seconds: int = 60

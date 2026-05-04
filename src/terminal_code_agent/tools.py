@@ -532,6 +532,16 @@ def summarize_tool_result(raw: str) -> dict[str, Any]:
     parsed = parse_tool_result(raw)
     data = parsed.data
     summary: dict[str, Any] = {"tool": parsed.tool, "ok": parsed.ok, "message": parsed.message}
+    if not parsed.ok:
+        summary["error_type"] = parsed.error_type
+        if parsed.hint:
+            summary["hint"] = parsed.hint
+        stderr = str(parsed.metadata.get("stderr") or data.get("stderr") or "")
+        stdout = str(parsed.metadata.get("stdout") or data.get("stdout") or "")
+        if stderr:
+            summary["stderr"] = stderr
+        if stdout:
+            summary["stdout"] = stdout
     if parsed.tool == "list_files":
         summary["entries"] = len(data.get("entries", []))
     elif parsed.tool == "search_files":

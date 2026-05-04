@@ -299,7 +299,7 @@ class Settings(BaseSettings):
     model_base_url: str | None = None
 
     token_budget_ratio: float = 0.85
-    max_tool_repair_attempts: int = 1
+    max_tool_repair_attempts: int = 3
     max_compact_attempts: int = 2
     max_context_chars_per_tool_result: int = 12000
     shell_timeout_seconds: int = 60
@@ -1459,6 +1459,9 @@ uv run terminal-code-agent --workdir . --thread-id default
 | `--env-file`  | `.env`     | 可选，配置文件路径。         |
 | `--log-level` | 从配置读取 | 覆盖日志级别。               |
 | `--no-color`  | false      | 禁用彩色终端输出。           |
+
+CLI 启动时展示 workdir、thread 和日志路径。用户输入和审批输入使用统一入口，并显式初始化
+`readline`，绑定 backspace / Ctrl-H / Delete 等常见删除键，避免不同终端退格行为不一致。
 
 ### 17.2 对话循环
 

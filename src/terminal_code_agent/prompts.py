@@ -31,6 +31,7 @@ REACT_SYSTEM_PROMPT = ChatPromptTemplate.from_messages(
 3. 修改文件前，先读取相关文件或确认目标路径。
 4. 对高风险操作会进入人工审批。
 5. 如需调用工具，使用模型原生 tool calls。
+   run_shell 已经在工作目录中执行，命令里不要再 cd 到绝对工作目录。
 6. 如不需要工具并准备结束，直接输出面向用户的最终回答文本。
 7. 不要输出 Markdown 代码块包裹最终回答，不要输出 JSON 结构。
 8. 不要泄露密钥、token、私钥或 `.env` 内容。
