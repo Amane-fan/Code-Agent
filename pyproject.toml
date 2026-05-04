@@ -1,45 +1,55 @@
 [project]
-name = "code-agent"
+name = "terminal-code-agent"
 version = "0.1.0"
-description = "A terminal-first AI coding agent with ReAct tool loops, workspace-safe file tools, and session logs."
+description = "A terminal code agent built with LangChain and LangGraph."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
+    "langchain>=1.0",
     "langchain-openai>=1.1,<2.0",
     "langgraph>=1.1,<2.0",
-    "mcp>=1.0",
-    "prompt_toolkit>=3.0",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "python-dotenv>=1.0",
     "rich>=13.7",
-    "typer>=0.12",
+    "tiktoken>=0.8",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "ruff>=0.6",
-    "mypy>=1.11",
-]
+sqlite = ["langgraph-checkpoint-sqlite>=2.0"]
 
 [project.scripts]
-code-agent = "code_agent.cli:main"
-code-agent-mcp-server = "code_agent.mcp_server:main"
-code-agent-mcp-client = "code_agent.mcp_client:main"
+terminal-code-agent = "terminal_code_agent.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "pytest-mock>=3.14",
+    "ruff>=0.6",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/code_agent"]
+packages = ["src/terminal_code_agent"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "-q"
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
 
 [tool.mypy]
-python_version = "3.12"
-strict = true
+python_version = "3.11"
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
