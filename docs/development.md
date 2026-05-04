@@ -41,7 +41,7 @@
 4. **工具风险等级**：只读工具默认允许；写文件、应用 patch、运行 shell 命令默认需要人工审批。
 5. **敏感信息**：`.env`、私钥、token、云凭据、SSH key、包管理凭据等默认拒绝读取、写入和日志输出。
 6. **模型输出**：最终输出是面向用户的纯文本；工具调用使用模型原生 `tool_calls`，但在 state 和日志中要保存结构化记录。
-7. **错误修复**：工具可恢复错误进入 `tool_repair`；最终文本不再做 schema 修复。
+7. **错误修复**：工具可恢复错误进入 `observe` 写入上下文，再回到模型重新规划；最终文本不再做 schema 修复。
 8. **上下文预算**：超过 token budget 时进入 `compact_context`，压缩历史后重新打包。
 9. **终端交互**：第一阶段实现同步 CLI；streaming token 输出不是必须项，但可以使用 LangGraph 更新流展示节点决策。
 10. **工具返回值**：所有工具返回 JSON 字符串，便于作为 `ToolMessage` 传回模型，也便于日志记录。
@@ -299,7 +299,6 @@ class Settings(BaseSettings):
     model_base_url: str | None = None
 
     token_budget_ratio: float = 0.85
-    max_tool_repair_attempts: int = 3
     max_compact_attempts: int = 2
     max_context_chars_per_tool_result: int = 12000
     shell_timeout_seconds: int = 60
@@ -391,7 +390,7 @@ human_approval -- approved --> tool_execute
 human_approval -- rejected --> call_model
 
 tool_execute -- success --> observe -> context_pack
-tool_execute -- retryable_error --> tool_repair -> call_model
+tool_execute -- retryable_error --> observe -> context_pack
 tool_execute -- fatal_error --> final_answer -> END
 ```
 
@@ -416,7 +415,6 @@ def build_graph(checkpointer):
     builder.add_node("human_approval", human_approval)
     builder.add_node("tool_execute", tool_execute)
     builder.add_node("observe", observe)
-    builder.add_node("tool_repair", tool_repair)
     builder.add_node("final_answer", final_answer)
 
     builder.add_edge(START, "init_state")
@@ -461,12 +459,11 @@ def build_graph(checkpointer):
         route_tool_execute,
         {
             "success": "observe",
-            "retryable_error": "tool_repair",
+            "retryable_error": "observe",
             "fatal_error": "final_answer",
         },
     )
     builder.add_edge("observe", "context_pack")
-    builder.add_edge("tool_repair", "call_model")
     builder.add_edge("final_answer", END)
 
     return builder.compile(checkpointer=checkpointer)
@@ -544,7 +541,6 @@ class AgentState(TypedDict, total=False):
     tool_results: list[dict[str, Any]]
     observations: list[dict[str, Any]]
     tool_error: dict[str, Any]
-    tool_repair_attempts: int
     tool_execute_status: Literal["success", "retryable_error", "fatal_error"]
 
     # 审计信息。
@@ -705,7 +701,6 @@ def build_chat_model(settings: Settings):
 1. `SKILL_SELECT_PROMPT`
 2. `REACT_SYSTEM_PROMPT`
 3. `COMPACT_CONTEXT_PROMPT`
-4. `TOOL_REPAIR_PROMPT`
 
 ### 11.1 ReAct 系统提示词
 
@@ -731,6 +726,7 @@ REACT_SYSTEM_PROMPT = ChatPromptTemplate.from_messages([
 7. 不要输出 Markdown 代码块包裹最终回答，不要输出 JSON 结构。
 8. 不要泄露密钥、token、私钥或 `.env` 内容。
 9. 不要虚构文件内容、命令结果或工具观察。
+10. 如果上一次工具调用失败，请根据工具观察和错误信息重新规划；不要自动重复同一个错误调用。
 
 当前已选择的 skills：
 {selected_skills}
@@ -769,9 +765,10 @@ skill 上下文：
 要求：
 
 1. 只能从扫描到的 skill 名称中选择。
-2. 没有合适 skill 时输出空数组。
-3. 不要选择过多 skill，优先 0 到 3 个。
-4. 输出不得包含 Markdown。
+2. 只根据 frontmatter `description` 判断是否需要加载。
+3. 没有合适 skill 时输出空数组。
+4. 不要选择过多 skill，优先 0 到 3 个。
+5. 输出不得包含 Markdown。
 
 ### 11.3 上下文压缩提示词
 
@@ -785,10 +782,6 @@ skill 上下文：
 6. 已执行命令。
 7. 失败的工具调用、错误原因和修复建议。
 8. 尚未解决的问题。
-
-### 11.4 工具错误修复提示词
-
-`TOOL_REPAIR_PROMPT` 只处理可恢复工具错误；最终回答仍直接输出面向用户的文本。
 
 ---
 
@@ -1244,18 +1237,19 @@ if "__interrupt__" in result:
 实现步骤：
 
 1. 扫描 `SKILLS_DIR`。
-2. 读取每个 `skills/<name>/SKILL.md` 的标题和摘要片段。
-3. 使用 `SKILL_SELECT_PROMPT` 调用 LLM。
+2. 读取每个 `skills/<dir>/SKILL.md` 的 YAML frontmatter，只使用 `name` 和 `description`。
+3. 使用 `SKILL_SELECT_PROMPT` 调用 LLM，基于 `description` 判断是否需要加载 skill。
 4. 解析 `SkillSelection` JSON。
-5. 对选中的 skill 加载摘要和必要 references。
+5. 对选中的 skill 加载 `SKILL.md` 内容。
 6. 写入 `selected_skills` 和 `skill_context`。
 7. 记录日志并输出选择原因。
 
 失败策略：
 
 1. skills 目录不存在：选择空列表。
-2. LLM 输出非法：选择空列表，并记录 `skill_select_parse_failed`。
-3. 某个 skill 资源读取失败：跳过该 skill。
+2. 某个 `SKILL.md` 缺少合法 frontmatter、`name` 或 `description`：跳过该 skill。
+3. LLM 输出非法：选择空列表，并记录 `skill_select_parse_failed`。
+4. 某个 skill 资源读取失败：跳过该 skill。
 
 ### 16.3 `context_pack`
 
@@ -1391,7 +1385,7 @@ token 估算：
 
 1. 顺序执行工具调用。
 2. 第一个 fatal error 出现时停止后续工具。
-3. 第一个 retryable error 出现时停止后续工具，进入 `tool_repair`。
+3. 第一个 retryable error 出现时停止后续工具，进入 `observe` 并把错误写入上下文。
 4. 全部成功后进入 `observe`。
 5. 将每个工具结果转换为 `ToolMessage` 并追加到 `messages`。
 
@@ -1415,19 +1409,6 @@ token 估算：
 4. 写入 `observations`。
 5. 追加一条可读观察到 `messages`。
 6. 输出终端摘要。
-
-### 16.11 `tool_repair`
-
-职责：处理可恢复工具错误。
-
-实现策略：
-
-1. 根据 `tool_error` 生成修复建议。
-2. 增加 `tool_repair_attempts`。
-3. 未超过上限：追加消息，返回 `call_model`。
-4. 超过上限：写入 fallback `final_answer`，设置 `force_final=true`，返回 `call_model`。
-
-注意：不要自动重复执行工具；让模型基于错误重新规划。
 
 ### 16.12 `final_answer`
 
@@ -1549,9 +1530,8 @@ def main():
 11. `human_approval`
 12. `tool_execute`
 13. `observe`
-14. `tool_repair`
-15. `final_answer`
-16. `run_end`
+14. `final_answer`
+15. `run_end`
 
 ### 18.3 脱敏与截断
 
@@ -1651,11 +1631,11 @@ skills/
 ### 20.2 `skill_select` 规则
 
 1. 每轮用户任务都会进入 skill 选择。
-2. 使用 LLM 从现有 skill 中选择。
+2. 使用 LLM 从现有 skill 中选择，选择依据只来自 frontmatter 的 `description`。
 3. 只能选择真实存在的 skill。
 4. 没有合适 skill 时选择空列表。
 5. 选择结果写入 `selected_skills`。
-6. 加载后的资源摘要写入 `skill_context`。
+6. 选中后加载 `SKILL.md` 内容写入 `skill_context`。
 
 ### 20.3 `load_skill_resource` 规则
 
@@ -1673,7 +1653,7 @@ target.relative_to(skill_root)
 
 不要一次性把所有 references 全量塞入上下文。建议：
 
-1. `skill_select` 阶段只加载 `SKILL.md` 摘要和 references 列表。
+1. `skill_select` 阶段只用 frontmatter `description` 做选择，选中后加载对应 `SKILL.md`。
 2. 模型需要细节时调用 `load_skill_resource`。
 3. 每个 skill 上下文最多，例如 8000 到 12000 字符。
 
@@ -1693,11 +1673,11 @@ target.relative_to(skill_root)
 
 | 错误             | 类型              | 处理                                     |
 | ---------------- | ----------------- | ---------------------------------------- |
-| 文件不存在       | `retryable_error` | `tool_repair -> call_model`              |
-| 参数 schema 错误 | `retryable_error` | `tool_repair -> call_model`              |
-| 正则表达式错误   | `retryable_error` | `tool_repair -> call_model`              |
-| patch 冲突       | `retryable_error` | `tool_repair -> call_model`              |
-| 命令超时         | `retryable_error` | `tool_repair -> call_model`              |
+| 文件不存在       | `retryable_error` | `observe -> context_pack -> call_model`  |
+| 参数 schema 错误 | `retryable_error` | `observe -> context_pack -> call_model`  |
+| 正则表达式错误   | `retryable_error` | `observe -> context_pack -> call_model`  |
+| patch 冲突       | `retryable_error` | `observe -> context_pack -> call_model`  |
+| 命令超时         | `retryable_error` | `observe -> context_pack -> call_model`  |
 | 路径逃逸         | `fatal_error`     | `final_answer` 或 `denied -> call_model` |
 | 敏感路径访问     | `fatal_error`     | `final_answer` 或 `denied -> call_model` |
 | 危险 shell 命令  | `fatal_error`     | `final_answer` 或 `denied -> call_model` |

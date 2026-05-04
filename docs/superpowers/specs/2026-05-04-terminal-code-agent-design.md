@@ -20,7 +20,7 @@
 
 项目采用 Python、LangChain、LangGraph 和 uv。核心模块按文档拆分为配置、schema、state、工具运行时、工具、工具审批、提示词、LLM 初始化、token 预算、日志、图节点和 CLI。
 
-LangGraph 使用自定义 `StateGraph(AgentState)`，包含文档指定的节点与条件路由：`init_state`、`skill_select`、`context_pack`、`budget_check`、`compact_context`、`call_model`、`repair_output`、`tool_gate`、`human_approval`、`tool_execute`、`observe`、`tool_repair`、`final_answer`。不使用黑盒 `create_react_agent`。
+LangGraph 使用自定义 `StateGraph(AgentState)`，包含文档指定的节点与条件路由：`init_state`、`skill_select`、`context_pack`、`budget_check`、`compact_context`、`call_model`、`repair_output`、`tool_gate`、`human_approval`、`tool_execute`、`observe`、`final_answer`。不使用黑盒 `create_react_agent`。
 
 ## 数据流
 
