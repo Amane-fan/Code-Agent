@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,4 +33,6 @@ class Settings(BaseSettings):
 def load_settings(env_file: str | Path = ".env") -> Settings:
     """按 CLI 指定的 env 文件加载配置。"""
 
+    # 先加载到进程环境，确保 LangChain provider SDK 能读取 API key。
+    load_dotenv(env_file, override=False)
     return Settings(_env_file=env_file)
