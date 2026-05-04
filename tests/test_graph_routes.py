@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from terminal_code_agent.config import Settings
 from terminal_code_agent.graph import (
@@ -11,7 +12,8 @@ from terminal_code_agent.graph import (
     route_model_result,
     route_tool_execute,
     route_tool_gate,
-    tool_repair,
+    skill_select,
+    tool_gate,
 )
 
 
@@ -42,6 +44,59 @@ class FakePlainTextModel:
     def invoke(self, messages):
         self.calls.append([str(getattr(message, "content", "")) for message in messages])
         return AIMessage(content="不是 JSON")
+
+
+class FakeRetryableToolErrorModel:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls.append([str(getattr(message, "content", "")) for message in messages])
+        if len(self.calls) == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "call_1", "name": "read_file", "args": {"path": "missing.txt"}}
+                ],
+            )
+        return AIMessage(content="已收到工具错误并重新规划。")
+
+
+class FakeSkillSelectionModel:
+    def __init__(self) -> None:
+        self.prompt = ""
+
+    def invoke(self, messages):
+        self.prompt = "\n".join(str(getattr(message, "content", "")) for message in messages)
+        return AIMessage(
+            content='{"selected_skills":["python_project"],"reason":"匹配 Python 任务"}'
+        )
+
+
+class FakeRejectedApprovalModel:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        if len(self.calls) == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "name": "write_file",
+                        "args": {"path": "amane.py", "content": "print('Amane')"},
+                    }
+                ],
+            )
+        return AIMessage(content="已取消执行写文件。")
 
 
 def test_route_functions_read_state_fields() -> None:
@@ -86,19 +141,103 @@ def test_plain_text_final_answer_does_not_need_json_repair(tmp_path: Path) -> No
     assert len(model.calls) == 1
 
 
-def test_tool_repair_fallback_includes_tool_error() -> None:
-    result = tool_repair(
-        {
-            "tool_repair_attempts": 3,
-            "tool_error": {
-                "tool": "apply_patch",
-                "message": "patch 校验失败",
-                "hint": "请重新读取相关文件后生成可应用的 patch。",
-            },
-        },
-        settings=Settings(max_tool_repair_attempts=3),
+def test_retryable_tool_error_is_added_to_next_model_context(tmp_path: Path) -> None:
+    settings = Settings(skills_dir=tmp_path / "skills")
+    model = FakeRetryableToolErrorModel()
+    graph = build_graph(InMemorySaver(), settings=settings, model=model)
+
+    result = graph.invoke(
+        {"thread_id": "test", "workdir": str(tmp_path), "user_input": "读取缺失文件"},
+        config={"configurable": {"thread_id": "test"}},
     )
 
-    assert result["force_final"] is True
-    assert "apply_patch 调用失败" in result["final_answer"]
-    assert "patch 校验失败" in result["final_answer"]
+    assert result["final_answer"] == "已收到工具错误并重新规划。"
+    assert len(model.calls) == 2
+    assert result["tool_error"]["tool"] == "read_file"
+    second_prompt = "\n".join(model.calls[1])
+    assert "文件不存在: missing.txt" in second_prompt
+    assert "工具观察" in second_prompt
+
+
+def test_skill_select_uses_frontmatter_description(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "python_project"
+    skill_dir.mkdir(parents=True)
+    skill_dir.joinpath("SKILL.md").write_text(
+        """---
+name: python_project
+description: Use when the user asks for Python project changes.
+---
+
+BODY SHOULD NOT BE USED FOR SKILL SELECTION.
+""",
+        encoding="utf-8",
+    )
+    settings = Settings(skills_dir=tmp_path / "skills")
+    model = FakeSkillSelectionModel()
+
+    result = skill_select({"user_input": "修改 Python 项目"}, settings=settings, model=model)
+
+    assert result["selected_skills"] == ["python_project"]
+    assert "Use when the user asks for Python project changes." in model.prompt
+    assert "BODY SHOULD NOT BE USED FOR SKILL SELECTION." not in model.prompt
+    assert "BODY SHOULD NOT BE USED FOR SKILL SELECTION." in result["skill_context"]
+
+
+def test_skill_select_builds_model_when_not_injected(tmp_path: Path, monkeypatch) -> None:
+    skill_dir = tmp_path / "skills" / "python_project"
+    skill_dir.mkdir(parents=True)
+    skill_dir.joinpath("SKILL.md").write_text(
+        """---
+name: python_project
+description: Use when the user asks for Python project changes.
+---
+""",
+        encoding="utf-8",
+    )
+    settings = Settings(skills_dir=tmp_path / "skills")
+    model = FakeSkillSelectionModel()
+
+    monkeypatch.setattr("terminal_code_agent.graph.build_chat_model", lambda settings: model)
+
+    result = skill_select({"user_input": "修改 Python 项目"}, settings=settings)
+
+    assert result["selected_skills"] == ["python_project"]
+    assert "Use when the user asks for Python project changes." in model.prompt
+
+
+def test_rejected_approval_adds_tool_message_for_pending_call(tmp_path: Path) -> None:
+    settings = Settings(skills_dir=tmp_path / "skills")
+    model = FakeRejectedApprovalModel()
+    graph = build_graph(InMemorySaver(), settings=settings, model=model)
+    config = {"configurable": {"thread_id": "test"}}
+
+    interrupted = graph.invoke(
+        {"thread_id": "test", "workdir": str(tmp_path), "user_input": "写文件"},
+        config=config,
+    )
+    assert "__interrupt__" in interrupted
+
+    result = graph.invoke(Command(resume={"decision": "rejected"}), config=config)
+
+    assert result["final_answer"] == "已取消执行写文件。"
+    assert len(model.calls) == 2
+    tool_messages = [message for message in model.calls[1] if isinstance(message, ToolMessage)]
+    assert any(
+        message.tool_call_id == "call_1" and "用户拒绝" in str(message.content)
+        for message in tool_messages
+    )
+
+
+def test_tool_gate_denied_adds_tool_message_for_pending_call(tmp_path: Path) -> None:
+    result = tool_gate(
+        {
+            "workdir": str(tmp_path),
+            "pending_tool_calls": [{"id": "call_1", "name": "unknown_tool", "args": {}}],
+        },
+        settings=Settings(skills_dir=tmp_path / "skills"),
+    )
+
+    assert result["tool_gate_route"] == "denied"
+    assert result["messages"][0]["role"] == "tool"
+    assert result["messages"][0]["tool_call_id"] == "call_1"
+    assert "工具调用被拒绝" in result["messages"][0]["content"]

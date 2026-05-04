@@ -45,7 +45,6 @@ class AgentState(TypedDict, total=False):
     tool_results: list[dict[str, Any]]
     observations: list[dict[str, Any]]
     tool_error: dict[str, Any]
-    tool_repair_attempts: int
     tool_execute_status: Literal["success", "retryable_error", "fatal_error"]
 
     changed_files: Annotated[list[str], operator.add]

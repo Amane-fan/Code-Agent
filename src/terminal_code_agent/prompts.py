@@ -6,7 +6,7 @@ SKILL_SELECT_PROMPT = ChatPromptTemplate.from_messages(
             "system",
             """你是终端 code agent 的 skill 选择器。
 
-只能从给定 skill 列表中选择。没有合适 skill 时输出空数组。
+只能从给定 skill 列表中选择，并只根据 description 判断是否需要加载。没有合适 skill 时输出空数组。
 输出必须是 JSON，格式为：
 {{"selected_skills":["python_project"],"reason":"用户要求实现 Python 项目"}}
 不要输出 Markdown。""",
@@ -36,6 +36,7 @@ REACT_SYSTEM_PROMPT = ChatPromptTemplate.from_messages(
 7. 不要输出 Markdown 代码块包裹最终回答，不要输出 JSON 结构。
 8. 不要泄露密钥、token、私钥或 `.env` 内容。
 9. 不要虚构文件内容、命令结果或工具观察。
+10. 如果上一次工具调用失败，请根据工具观察和错误信息重新规划；不要自动重复同一个错误调用。
 
 当前已选择的 skills：
 {selected_skills}
@@ -71,17 +72,5 @@ COMPACT_CONTEXT_PROMPT = ChatPromptTemplate.from_messages(
 已执行命令、失败工具调用及错误原因、尚未解决的问题。输出普通文本摘要。""",
         ),
         ("user", "{context}"),
-    ]
-)
-
-
-TOOL_REPAIR_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "上一次工具调用失败。请根据错误重新规划；"
-            "不要自动重复同一个错误调用。最终回答应直接输出面向用户的文本。",
-        ),
-        ("user", "工具错误：\n{tool_error}"),
     ]
 )

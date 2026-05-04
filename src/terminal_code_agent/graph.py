@@ -14,7 +14,6 @@ from terminal_code_agent.prompts import (
     COMPACT_CONTEXT_PROMPT,
     REACT_SYSTEM_PROMPT,
     SKILL_SELECT_PROMPT,
-    TOOL_REPAIR_PROMPT,
 )
 from terminal_code_agent.schemas import (
     ApprovalRequest,
@@ -52,6 +51,20 @@ def _message_from_record(record: ChatRecord) -> BaseMessage:
 def _message_to_record(message: Any) -> ChatRecord:
     content = str(getattr(message, "content", ""))
     return {"role": "assistant", "content": content}
+
+
+def _tool_denial_messages(calls: list[dict[str, Any]], reason: str) -> list[ChatRecord]:
+    messages: list[ChatRecord] = []
+    for index, call in enumerate(calls):
+        messages.append(
+            {
+                "role": "tool",
+                "content": reason,
+                "tool_call_id": str(call.get("id") or f"call_{index}"),
+                "name": str(call.get("name") or "unknown_tool"),
+            }
+        )
+    return messages
 
 
 def _state_settings(state: AgentState, settings: Settings) -> Settings:
@@ -118,9 +131,39 @@ def _scan_skills(settings: Settings) -> list[dict[str, str]]:
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.exists():
             continue
-        snippet = skill_md.read_text(encoding="utf-8", errors="replace")[:1000]
-        items.append({"name": skill_dir.name, "summary": snippet})
+        metadata = _parse_skill_metadata(skill_md.read_text(encoding="utf-8", errors="replace"))
+        if metadata is None:
+            continue
+        items.append(
+            {
+                "name": metadata["name"],
+                "description": metadata["description"],
+                "path": str(skill_md),
+            }
+        )
     return items
+
+
+def _parse_skill_metadata(content: str) -> dict[str, str] | None:
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    try:
+        end = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+    except StopIteration:
+        return None
+    metadata: dict[str, str] = {}
+    for line in lines[1:end]:
+        key, separator, value = line.partition(":")
+        if separator != ":":
+            continue
+        key = key.strip()
+        value = value.strip().strip("\"'")
+        if key in {"name", "description"}:
+            metadata[key] = value
+    if not metadata.get("name") or not metadata.get("description"):
+        return None
+    return metadata
 
 
 def skill_select(
@@ -134,8 +177,10 @@ def skill_select(
             "skill_context": "",
             "skill_reason": "skills 目录不存在或为空",
         }
-    available = "\n".join(f"- {item['name']}: {item['summary'][:300]}" for item in skills)
+    available = "\n".join(f"- {item['name']}: {item['description']}" for item in skills)
     selection = SkillSelection(selected_skills=[], reason="未选择 skill")
+    if model is None:
+        model = build_chat_model(settings)
     if model is not None:
         try:
             response = model.invoke(
@@ -150,8 +195,9 @@ def skill_select(
         name for name in selection.selected_skills if any(item["name"] == name for item in skills)
     ][:3]
     contexts: list[str] = []
+    skill_by_name = {item["name"]: item for item in skills}
     for name in selected:
-        skill_file = settings.skills_dir / name / "SKILL.md"
+        skill_file = Path(skill_by_name[name]["path"])
         content = skill_file.read_text(encoding="utf-8", errors="replace")
         contexts.append(f"# {name}\n{content[:8000]}")
     _print_event(f"[decision] selected_skills={selected} reason={selection.reason!r}")
@@ -314,12 +360,8 @@ def tool_gate(state: AgentState, *, settings: Settings) -> dict[str, Any]:
         _print_event(f"[gate] needs_approval risk={result['approval_request'].get('risk')!r}")
     else:
         _print_event(f"[gate] denied={result.get('denied_tool_calls', [])}")
-        result["messages"] = [
-            {
-                "role": "assistant",
-                "content": f"工具调用被拒绝：{result.get('denied_tool_calls', [])}。请重新规划。",
-            }
-        ]
+        reason = f"工具调用被拒绝：{result.get('denied_tool_calls', [])}。请重新规划。"
+        result["messages"] = _tool_denial_messages(state.get("pending_tool_calls", []), reason)
     return result
 
 
@@ -335,9 +377,9 @@ def human_approval(state: AgentState) -> dict[str, Any]:
         }
     return {
         "approval_result": "rejected",
-        "messages": [
-            {"role": "assistant", "content": "用户拒绝了工具调用。请基于拒绝结果重新规划。"}
-        ],
+        "messages": _tool_denial_messages(
+            state.get("pending_tool_calls", []), "用户拒绝了工具调用。请基于拒绝结果重新规划。"
+        ),
     }
 
 
@@ -389,29 +431,6 @@ def observe(state: AgentState, *, settings: Settings) -> dict[str, Any]:
     return {
         "observations": observations,
         "messages": [{"role": "assistant", "content": f"工具观察：{text}"}],
-    }
-
-
-def tool_repair(state: AgentState, *, settings: Settings) -> dict[str, Any]:
-    attempts = state.get("tool_repair_attempts", 0)
-    if attempts >= settings.max_tool_repair_attempts:
-        error = state.get("tool_error", {})
-        tool = str(error.get("tool", "工具"))
-        message = str(error.get("message", "工具调用失败"))
-        hint = str(error.get("hint", ""))
-        detail = f"{tool} 调用失败，已达到修复上限：{message}"
-        if hint:
-            detail = f"{detail}。建议：{hint}"
-        return {
-            "force_final": True,
-            "final_answer": fallback_answer(detail),
-        }
-    prompt = TOOL_REPAIR_PROMPT.format(
-        tool_error=json.dumps(state.get("tool_error", {}), ensure_ascii=False)
-    )
-    return {
-        "tool_repair_attempts": attempts + 1,
-        "messages": [{"role": "developer", "content": prompt}],
     }
 
 
@@ -471,7 +490,6 @@ def build_graph(
     builder.add_node("human_approval", human_approval)
     builder.add_node("tool_execute", lambda state: tool_execute(state, settings=settings))
     builder.add_node("observe", lambda state: observe(state, settings=settings))
-    builder.add_node("tool_repair", lambda state: tool_repair(state, settings=settings))
     builder.add_node("final_answer", lambda state: final_answer(state, logger=logger))
 
     builder.add_edge(START, "init_state")
@@ -503,10 +521,9 @@ def build_graph(
     builder.add_conditional_edges(
         "tool_execute",
         route_tool_execute,
-        {"success": "observe", "retryable_error": "tool_repair", "fatal_error": "final_answer"},
+        {"success": "observe", "retryable_error": "observe", "fatal_error": "final_answer"},
     )
     builder.add_edge("observe", "context_pack")
-    builder.add_edge("tool_repair", "call_model")
     builder.add_edge("final_answer", END)
 
     return builder.compile(checkpointer=checkpointer)
