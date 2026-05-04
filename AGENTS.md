@@ -29,4 +29,4 @@ Recent history uses concise Conventional Commit prefixes, for example `feat: imp
 
 ## Security & Agent-Specific Constraints
 
-Do not replace the explicit LangGraph structure with a black-box agent. File tools must stay confined to the startup `workdir`. `run_shell`, `write_file`, and `apply_patch` require human approval by default. Never log secrets, tokens, full `.env` contents, private keys, or credential files. Final agent responses produced by the application must remain valid `FinalAnswer` JSON.
+Do not replace the explicit LangGraph structure with a black-box agent. File tools must stay confined to the startup `workdir`. `run_shell`, `write_file`, and `apply_patch` require human approval by default. Never log secrets, tokens, full `.env` contents, private keys, or credential files. Final agent responses produced by the application should be written to the `final_answer` text field.

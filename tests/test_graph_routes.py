@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
@@ -29,20 +28,19 @@ class FakeToolModel:
                 content="",
                 tool_calls=[{"id": "call_1", "name": "list_files", "args": {"path": "."}}],
             )
-        return AIMessage(
-            content=json.dumps(
-                {
-                    "type": "final",
-                    "answer": "已查看项目结构。",
-                    "summary": "调用 list_files。",
-                    "changed_files": [],
-                    "commands_run": [],
-                    "risks_or_notes": [],
-                    "next_steps": [],
-                },
-                ensure_ascii=False,
-            )
-        )
+        return AIMessage(content="已查看项目结构。")
+
+
+class FakePlainTextModel:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls.append([str(getattr(message, "content", "")) for message in messages])
+        return AIMessage(content="不是 JSON")
 
 
 def test_route_functions_read_state_fields() -> None:
@@ -69,5 +67,19 @@ def test_graph_readonly_tool_flow_with_fake_model(tmp_path: Path) -> None:
         config={"configurable": {"thread_id": "test"}},
     )
 
-    assert result["final_json"]["type"] == "final"
+    assert result["final_answer"] == "已查看项目结构。"
     assert result["tool_results"][0]["tool"] == "list_files"
+
+
+def test_plain_text_final_answer_does_not_need_json_repair(tmp_path: Path) -> None:
+    settings = Settings(skills_dir=tmp_path / "skills")
+    model = FakePlainTextModel()
+    graph = build_graph(InMemorySaver(), settings=settings, model=model)
+
+    result = graph.invoke(
+        {"thread_id": "test", "workdir": str(tmp_path), "user_input": "直接回答"},
+        config={"configurable": {"thread_id": "test"}},
+    )
+
+    assert result["final_answer"] == "不是 JSON"
+    assert len(model.calls) == 1

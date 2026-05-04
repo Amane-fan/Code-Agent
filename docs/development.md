@@ -40,8 +40,8 @@
 3. **工作目录边界**：所有文件系统工具必须限制在启动时指定的 `workdir` 内部。
 4. **工具风险等级**：只读工具默认允许；写文件、应用 patch、运行 shell 命令默认需要人工审批。
 5. **敏感信息**：`.env`、私钥、token、云凭据、SSH key、包管理凭据等默认拒绝读取、写入和日志输出。
-6. **模型输出**：最终输出必须是 JSON；工具调用使用模型原生 `tool_calls`，但在 state 和日志中要保存结构化记录。
-7. **错误修复**：模型输出格式错误进入 `repair_output`；工具可恢复错误进入 `tool_repair`。
+6. **模型输出**：最终输出是面向用户的纯文本；工具调用使用模型原生 `tool_calls`，但在 state 和日志中要保存结构化记录。
+7. **错误修复**：工具可恢复错误进入 `tool_repair`；最终文本不再做 schema 修复。
 8. **上下文预算**：超过 token budget 时进入 `compact_context`，压缩历史后重新打包。
 9. **终端交互**：第一阶段实现同步 CLI；streaming token 输出不是必须项，但可以使用 LangGraph 更新流展示节点决策。
 10. **工具返回值**：所有工具返回 JSON 字符串，便于作为 `ToolMessage` 传回模型，也便于日志记录。
@@ -299,7 +299,6 @@ class Settings(BaseSettings):
     model_base_url: str | None = None
 
     token_budget_ratio: float = 0.85
-    max_repair_attempts: int = 2
     max_tool_repair_attempts: int = 1
     max_compact_attempts: int = 2
     max_context_chars_per_tool_result: int = 12000
@@ -384,8 +383,6 @@ budget_check -- over_limit --> compact_context -> context_pack
 
 call_model -- tool_calls --> tool_gate
 call_model -- final --> final_answer -> END
-call_model -- invalid_output --> repair_output -> call_model
-
 tool_gate -- allowed --> tool_execute
 tool_gate -- needs_approval --> human_approval
 tool_gate -- denied --> call_model
@@ -415,7 +412,6 @@ def build_graph(checkpointer):
     builder.add_node("budget_check", budget_check)
     builder.add_node("compact_context", compact_context)
     builder.add_node("call_model", call_model)
-    builder.add_node("repair_output", repair_output)
     builder.add_node("tool_gate", tool_gate)
     builder.add_node("human_approval", human_approval)
     builder.add_node("tool_execute", tool_execute)
@@ -441,10 +437,8 @@ def build_graph(checkpointer):
         {
             "tool_calls": "tool_gate",
             "final": "final_answer",
-            "invalid_output": "repair_output",
         },
     )
-    builder.add_edge("repair_output", "call_model")
 
     builder.add_conditional_edges(
         "tool_gate",
@@ -485,7 +479,7 @@ def build_graph(checkpointer):
 | 路由函数               | 读取字段              | 返回值                                        |
 | ---------------------- | --------------------- | --------------------------------------------- |
 | `route_budget_check`   | `budget_status`       | `ok` / `over_limit`                           |
-| `route_model_result`   | `model_route`         | `tool_calls` / `final` / `invalid_output`     |
+| `route_model_result`   | `model_route`         | `tool_calls` / `final`                        |
 | `route_tool_gate`      | `tool_gate_route`     | `allowed` / `needs_approval` / `denied`       |
 | `route_human_approval` | `approval_result`     | `approved` / `rejected`                       |
 | `route_tool_execute`   | `tool_execute_status` | `success` / `retryable_error` / `fatal_error` |
@@ -534,12 +528,10 @@ class AgentState(TypedDict, total=False):
     budget_status: Literal["ok", "over_limit"]
     compact_attempts: int
 
-    # 模型结果和修复状态。
+    # 模型结果状态。
     llm_calls: int
     model_response: dict[str, Any]
-    model_route: Literal["tool_calls", "final", "invalid_output"]
-    repair_attempts: int
-    last_invalid_output: str
+    model_route: Literal["tool_calls", "final"]
     force_final: bool
 
     # 工具调用、审批、观察。
@@ -560,7 +552,7 @@ class AgentState(TypedDict, total=False):
     commands_run: list[str]
 
     # 最终输出。
-    final_json: dict[str, Any]
+    final_answer: str
 ```
 
 ### 8.2 State 更新规则
@@ -583,37 +575,15 @@ class AgentState(TypedDict, total=False):
 
 ## 9. Pydantic Schema 设计
 
-### 9.1 最终回答 schema
+### 9.1 最终回答
 
-```python
-from typing import Literal
-from pydantic import BaseModel, Field
+最终模型输出是面向用户的纯文本，不再要求结构化 JSON schema。图状态使用
+`final_answer: str` 保存该文本，CLI 直接打印此字段。
 
+示例：
 
-class FinalAnswer(BaseModel):
-    type: Literal["final"] = "final"
-    answer: str = Field(description="面向用户的最终回答")
-    summary: str = Field(default="", description="本轮 agent 做了什么")
-    changed_files: list[str] = Field(default_factory=list)
-    commands_run: list[str] = Field(default_factory=list)
-    risks_or_notes: list[str] = Field(default_factory=list)
-    next_steps: list[str] = Field(default_factory=list)
-```
-
-最终模型输出必须是裸 JSON 对象，不使用 Markdown 代码块包裹。
-
-合法示例：
-
-```json
-{
-  "type": "final",
-  "answer": "已查看项目结构，主要代码位于 src/terminal_code_agent。",
-  "summary": "调用 list_files 查看了工作目录。",
-  "changed_files": [],
-  "commands_run": [],
-  "risks_or_notes": [],
-  "next_steps": ["如需修改代码，请指定目标文件或功能。"]
-}
+```text
+已查看项目结构，主要代码位于 src/terminal_code_agent。
 ```
 
 ### 9.2 工具结果 schema
@@ -735,8 +705,7 @@ def build_chat_model(settings: Settings):
 1. `SKILL_SELECT_PROMPT`
 2. `REACT_SYSTEM_PROMPT`
 3. `COMPACT_CONTEXT_PROMPT`
-4. `REPAIR_OUTPUT_PROMPT`
-5. `TOOL_REPAIR_PROMPT`
+4. `TOOL_REPAIR_PROMPT`
 
 ### 11.1 ReAct 系统提示词
 
@@ -758,8 +727,8 @@ REACT_SYSTEM_PROMPT = ChatPromptTemplate.from_messages([
 3. 修改文件前，先读取相关文件或确认目标路径。
 4. 对高风险操作会进入人工审批。
 5. 如需调用工具，使用模型原生 tool calls。
-6. 如不需要工具并准备结束，最终回答必须只输出一个 JSON 对象，符合 FinalAnswer schema。
-7. 不要输出 Markdown 包裹 JSON，不要输出额外解释文本。
+6. 如不需要工具并准备结束，直接输出面向用户的最终回答文本。
+7. 不要输出 Markdown 代码块包裹最终回答，不要输出 JSON 结构。
 8. 不要泄露密钥、token、私钥或 `.env` 内容。
 9. 不要虚构文件内容、命令结果或工具观察。
 
@@ -817,15 +786,9 @@ skill 上下文：
 7. 失败的工具调用、错误原因和修复建议。
 8. 尚未解决的问题。
 
-### 11.4 输出修复提示词
+### 11.4 工具错误修复提示词
 
-`REPAIR_OUTPUT_PROMPT` 只修复格式，不改变事实内容：
-
-```text
-你上一次输出不是合法 FinalAnswer JSON。请只输出一个合法 JSON 对象。
-不得添加 Markdown 代码块。
-不得改变已有事实。
-```
+`TOOL_REPAIR_PROMPT` 只处理可恢复工具错误；最终回答仍直接输出面向用户的文本。
 
 ---
 
@@ -1382,31 +1345,13 @@ token 估算：
    - 写入 `model_route="tool_calls"`。
    - 终端输出工具名和参数摘要。
 6. 若响应无 `tool_calls`：
-   - 尝试把 `content` 解析为 `FinalAnswer`。
-   - 成功：写入 `final_json` 和 `model_route="final"`。
-   - 失败：写入 `last_invalid_output` 和 `model_route="invalid_output"`。
+   - 直接把 `content` 写入 `final_answer`。
+   - 写入 `model_route="final"`。
 7. 增加 `llm_calls`。
 
 注意：不要让模型在工具结果尚未写入 `messages` 的情况下假设工具已经执行。
 
-### 16.7 `repair_output`
-
-职责：修复最终 JSON 格式。
-
-实现策略：
-
-1. 如果 `repair_attempts < MAX_REPAIR_ATTEMPTS`：
-   - 追加修复提示到 `messages`。
-   - 增加 `repair_attempts`。
-   - 返回 `call_model`。
-2. 如果已达到上限：
-   - 写入 fallback `final_json`。
-   - 设置 `force_final=true`。
-   - 返回 `call_model`，由 `call_model` 直接路由到 `final_answer`。
-
-这样可以保持用户指定的图结构：`repair_output -> call_model`。
-
-### 16.8 `tool_gate`
+### 16.7 `tool_gate`
 
 职责：判断工具调用是否允许。
 
@@ -1471,7 +1416,7 @@ token 估算：
 5. 追加一条可读观察到 `messages`。
 6. 输出终端摘要。
 
-### 16.12 `tool_repair`
+### 16.11 `tool_repair`
 
 职责：处理可恢复工具错误。
 
@@ -1480,20 +1425,20 @@ token 估算：
 1. 根据 `tool_error` 生成修复建议。
 2. 增加 `tool_repair_attempts`。
 3. 未超过上限：追加消息，返回 `call_model`。
-4. 超过上限：写入 fallback `final_json`，设置 `force_final=true`，返回 `call_model`。
+4. 超过上限：写入 fallback `final_answer`，设置 `force_final=true`，返回 `call_model`。
 
 注意：不要自动重复执行工具；让模型基于错误重新规划。
 
-### 16.13 `final_answer`
+### 16.12 `final_answer`
 
 职责：生成最终输出。
 
 要求：
 
-1. 输出 `final_json`。
-2. 若 `final_json` 不存在，应根据当前 state 生成 fallback JSON。
+1. 输出 `final_answer`。
+2. 若 `final_answer` 不存在，应根据当前 state 生成 fallback 文本。
 3. 记录日志 `final_answer`。
-4. CLI 可以把 JSON 格式化显示，但不能改变底层结果。
+4. CLI 直接打印最终文本。
 
 ---
 
@@ -1537,7 +1482,7 @@ def main():
             "user_input": user_input,
         }
         result = run_graph_with_approval_loop(graph, state_input, config)
-        print_final(result.get("final_json", result))
+        print_final(result)
 ```
 
 ### 17.3 终端事件输出
@@ -1571,6 +1516,7 @@ def main():
 {
   "timestamp": "2026-05-04T12:00:00+08:00",
   "level": "INFO",
+  "session_id": "...",
   "event": "tool_execute",
   "run_id": "...",
   "thread_id": "default",
@@ -1583,6 +1529,8 @@ def main():
 }
 ```
 
+日志默认写入 `.agent/logs/agent-YYYYMMDD-HHMMSS-ffffff-<session>.jsonl`，每次 CLI 会话生成一个独立文件。
+
 ### 18.2 必须记录的事件
 
 1. `run_start`
@@ -1594,14 +1542,13 @@ def main():
 7. `compact_context`
 8. `call_model`
 9. `model_decision`
-10. `repair_output`
-11. `tool_gate`
-12. `human_approval`
-13. `tool_execute`
-14. `observe`
-15. `tool_repair`
-16. `final_answer`
-17. `run_end`
+10. `tool_gate`
+11. `human_approval`
+12. `tool_execute`
+13. `observe`
+14. `tool_repair`
+15. `final_answer`
+16. `run_end`
 
 ### 18.3 脱敏与截断
 
@@ -1731,14 +1678,13 @@ target.relative_to(skill_root)
 
 ## 21. 错误分类与恢复策略
 
-### 21.1 模型输出错误
+### 21.1 模型输出
 
-| 错误                            | 处理                  |
-| ------------------------------- | --------------------- |
-| 无 tool calls 且不是 JSON       | `repair_output`       |
-| JSON 语法错误                   | `repair_output`       |
-| JSON 合法但不符合 `FinalAnswer` | `repair_output`       |
-| 修复超过上限                    | fallback `final_json` |
+| 情况                    | 处理                              |
+| ----------------------- | --------------------------------- |
+| 无 tool calls           | 直接写入 `final_answer`           |
+| 输出内容看起来像 JSON   | 仍作为普通文本写入 `final_answer` |
+| 模型未返回内容          | `final_answer` 节点生成兜底文本   |
 
 ### 21.2 工具错误
 
@@ -1763,7 +1709,7 @@ target.relative_to(skill_root)
 
 `tool_execute` 阶段发生 fatal error，说明工具执行时触发致命错误。此时推荐：
 
-1. 写入 `final_json`。
+1. 写入 `final_answer`。
 2. 路由 `fatal_error -> final_answer`。
 
 ---
@@ -1776,7 +1722,6 @@ target.relative_to(skill_root)
 
 | 测试文件                    | 内容                                                 |
 | --------------------------- | ---------------------------------------------------- |
-| `test_output_schema.py`     | `FinalAnswer` 合法 / 非法 JSON 验证。                |
 | `test_token_budget.py`      | token 预算计算、超限和未超限路由。                   |
 | `test_tools_path_safety.py` | `../secret`、绝对路径、敏感路径拒绝。                |
 | `test_tool_gate.py`         | 只读 allowed，写入 needs_approval，未知工具 denied。 |
@@ -1805,7 +1750,7 @@ target.relative_to(skill_root)
 3. `tool_gate` allowed。
 4. `tool_execute` success。
 5. `observe` 写入观察。
-6. 模型输出合法 `FinalAnswer`。
+6. 模型输出纯文本最终回答。
 
 另一个流程：
 
@@ -1859,10 +1804,9 @@ uv run python -m terminal_code_agent --help
 
 1. `Settings`
 2. `AgentState`
-3. `FinalAnswer`
-4. `ToolResult`
-5. `ApprovalRequest`
-6. 基础测试
+3. `ToolResult`
+4. `ApprovalRequest`
+5. 基础测试
 
 验收：
 
@@ -2010,11 +1954,11 @@ uv run terminal-code-agent --workdir .
 
 1. `uv run terminal-code-agent --workdir .` 能启动终端对话。
 2. `uv run python -m terminal_code_agent --workdir .` 也能启动。
-3. 输入只读问题时，agent 能调用只读工具并返回最终 JSON。
+3. 输入只读问题时，agent 能调用只读工具并返回最终文本。
 4. 输入修改类问题时，agent 在 `apply_patch` 或 `write_file` 前触发 human approval。
 5. 输入命令执行类问题时，agent 在 `run_shell` 前触发 human approval。
 6. 拒绝审批后，agent 能把拒绝作为观察并重新规划或给出最终说明。
-7. 最终回答是合法 `FinalAnswer` JSON。
+7. 最终回答是面向用户的纯文本。
 8. 日志文件产生，并包含主要节点事件。
 9. 工具全部在 `tools.py`，且全部使用 `@tool`。
 10. 提示词模板全部在 `prompts.py`。

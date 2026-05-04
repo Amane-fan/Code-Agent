@@ -87,7 +87,7 @@ agent> {"type":"final","answer":"..."}
 
 ## 日志
 
-日志默认写入 `.agent/logs/agent-YYYYMMDD.jsonl`。每行是一个 JSON 事件，包含 run、节点、工具、审批、观察和最终回答等审计信息。
+日志默认写入 `.agent/logs/agent-YYYYMMDD-HHMMSS-ffffff-<session>.jsonl`，每次 CLI 会话生成一个独立文件。每行是一个 JSON 事件，包含 session、run、节点、工具、审批、观察和最终回答等审计信息。
 
 ## 测试
 
@@ -100,9 +100,9 @@ uv run ruff check .
 
 ## 常见问题
 
-**最终回答为什么是 JSON？**
+**最终回答为什么是纯文本？**
 
-开发文档要求最终模型输出必须符合 `FinalAnswer` schema，便于终端、日志和后续程序稳定解析。
+当前最终输出契约只保留面向用户的回答文本，CLI 会直接打印 `final_answer`。
 
 **为什么写文件和运行命令都要审批？**
 

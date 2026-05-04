@@ -83,8 +83,7 @@ def run_graph_with_approval_loop(
 
 
 def print_final(result: dict[str, Any]) -> None:
-    final_json = result.get("final_json", result)
-    console.print(json.dumps(final_json, ensure_ascii=False, indent=2))
+    console.print(str(result.get("final_answer", "")))
 
 
 def main() -> None:

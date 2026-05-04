@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from terminal_code_agent.config import Settings
 from terminal_code_agent.schemas import ApprovalRequest, PendingToolCall
@@ -80,8 +80,9 @@ def evaluate_tool_calls(
             denied.append({"name": call.name, "reason": "未知工具，不能执行"})
             continue
         try:
-            if tool_obj.args_schema is not None:
-                tool_obj.args_schema.model_validate(call.args)
+            schema = tool_obj.args_schema
+            if isinstance(schema, type) and issubclass(schema, BaseModel):
+                schema.model_validate(call.args)
             _precheck_path_args(call, settings, workdir)
         except (ValidationError, SecurityError, ValueError) as exc:
             denied.append({"name": call.name, "reason": str(exc), "id": call.id})

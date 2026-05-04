@@ -1,7 +1,7 @@
 import json
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
@@ -13,7 +13,6 @@ from terminal_code_agent.logging_utils import JsonlLogger
 from terminal_code_agent.prompts import (
     COMPACT_CONTEXT_PROMPT,
     REACT_SYSTEM_PROMPT,
-    REPAIR_OUTPUT_PROMPT,
     SKILL_SELECT_PROMPT,
     TOOL_REPAIR_PROMPT,
 )
@@ -21,9 +20,8 @@ from terminal_code_agent.schemas import (
     ApprovalRequest,
     PendingToolCall,
     SkillSelection,
-    fallback_final,
+    fallback_answer,
     parse_approval_resume,
-    parse_final_answer,
 )
 from terminal_code_agent.state import AgentState, ChatRecord
 from terminal_code_agent.token_budget import (
@@ -217,12 +215,7 @@ def compact_context(state: AgentState, *, settings: Settings, model: Any = None)
     if attempts >= settings.max_compact_attempts or model is None:
         return {
             "force_final": True,
-            "final_json": fallback_final(
-                "上下文超过预算，已停止继续调用模型。",
-                risks_or_notes=["上下文压缩次数达到上限。"],
-                changed_files=state.get("changed_files", []),
-                commands_run=state.get("commands_run", []),
-            ),
+            "final_answer": fallback_answer("上下文超过预算，已停止继续调用模型。"),
         }
     response = model.invoke(
         COMPACT_CONTEXT_PROMPT.format_messages(context=state.get("packed_context", ""))
@@ -231,7 +224,12 @@ def compact_context(state: AgentState, *, settings: Settings, model: Any = None)
 
 
 def _build_prompt_messages(state: AgentState) -> list[BaseMessage]:
-    records = state.get("context_messages") or state.get("messages", [])
+    messages = state.get("messages", [])
+    context_messages = state.get("context_messages") or []
+    records = cast(
+        list[ChatRecord],
+        context_messages if len(context_messages) == len(messages) else messages[-30:],
+    )
     history = [_message_from_record(record) for record in records]
     return REACT_SYSTEM_PROMPT.format_messages(
         workdir=state.get("workdir", ""),
@@ -292,36 +290,15 @@ def call_model(
             }
         )
         return update
-    try:
-        final = parse_final_answer(content)
-        update.update(
-            {
-                "final_json": final.model_dump(),
-                "model_route": "final",
-                "messages": [_message_to_record(response)],
-            }
-        )
-    except Exception:
-        update.update({"last_invalid_output": content, "model_route": "invalid_output"})
+    update.update(
+        {
+            "final_answer": content,
+            "model_route": "final",
+            "messages": [_message_to_record(response)],
+        }
+    )
     _log(logger, state, "call_model", "call_model", {"route": update["model_route"]})
     return update
-
-
-def repair_output(state: AgentState, *, settings: Settings) -> dict[str, Any]:
-    attempts = state.get("repair_attempts", 0)
-    if attempts >= settings.max_repair_attempts:
-        return {
-            "force_final": True,
-            "final_json": fallback_final(
-                "模型输出不是合法 JSON，已使用兜底结果结束本轮。",
-                summary="最终回答格式修复超过上限。",
-                changed_files=state.get("changed_files", []),
-                commands_run=state.get("commands_run", []),
-                risks_or_notes=[state.get("last_invalid_output", "")[:500]],
-            ),
-        }
-    prompt = REPAIR_OUTPUT_PROMPT.format(last_invalid_output=state.get("last_invalid_output", ""))
-    return {"repair_attempts": attempts + 1, "messages": [{"role": "developer", "content": prompt}]}
 
 
 def tool_gate(state: AgentState, *, settings: Settings) -> dict[str, Any]:
@@ -420,12 +397,7 @@ def tool_repair(state: AgentState, *, settings: Settings) -> dict[str, Any]:
     if attempts >= settings.max_tool_repair_attempts:
         return {
             "force_final": True,
-            "final_json": fallback_final(
-                "工具调用失败，已达到修复上限。",
-                changed_files=state.get("changed_files", []),
-                commands_run=state.get("commands_run", []),
-                risks_or_notes=[json.dumps(state.get("tool_error", {}), ensure_ascii=False)[:500]],
-            ),
+            "final_answer": fallback_answer("工具调用失败，已达到修复上限。"),
         }
     prompt = TOOL_REPAIR_PROMPT.format(
         tool_error=json.dumps(state.get("tool_error", {}), ensure_ascii=False)
@@ -437,14 +409,10 @@ def tool_repair(state: AgentState, *, settings: Settings) -> dict[str, Any]:
 
 
 def final_answer(state: AgentState, *, logger: JsonlLogger | None = None) -> dict[str, Any]:
-    final = state.get("final_json") or fallback_final(
-        "本轮已结束。",
-        changed_files=state.get("changed_files", []),
-        commands_run=state.get("commands_run", []),
-    )
+    final = state.get("final_answer") or fallback_answer("本轮已结束。")
     _print_event("[final] done")
-    _log(logger, state, "final_answer", "final_answer", final)
-    return {"final_json": final}
+    _log(logger, state, "final_answer", "final_answer", {"answer": final})
+    return {"final_answer": final}
 
 
 def route_budget_check(state: AgentState) -> str:
@@ -452,7 +420,7 @@ def route_budget_check(state: AgentState) -> str:
 
 
 def route_model_result(state: AgentState) -> str:
-    return state.get("model_route", "invalid_output")
+    return state.get("model_route", "final")
 
 
 def route_tool_gate(state: AgentState) -> str:
@@ -492,7 +460,6 @@ def build_graph(
     builder.add_node(
         "call_model", lambda state: call_model(state, settings=settings, model=model, logger=logger)
     )
-    builder.add_node("repair_output", lambda state: repair_output(state, settings=settings))
     builder.add_node("tool_gate", lambda state: tool_gate(state, settings=settings))
     builder.add_node("human_approval", human_approval)
     builder.add_node("tool_execute", lambda state: tool_execute(state, settings=settings))
@@ -513,9 +480,8 @@ def build_graph(
     builder.add_conditional_edges(
         "call_model",
         route_model_result,
-        {"tool_calls": "tool_gate", "final": "final_answer", "invalid_output": "repair_output"},
+        {"tool_calls": "tool_gate", "final": "final_answer"},
     )
-    builder.add_edge("repair_output", "call_model")
 
     builder.add_conditional_edges(
         "tool_gate",

@@ -62,6 +62,14 @@ def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     return f"{text[:max_chars]}...[TRUNCATED {len(text) - max_chars} chars]", True
 
 
+def _subprocess_text(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value
+
+
 def result_json(result: ToolResult) -> str:
     return result.model_dump_json()
 
@@ -235,8 +243,8 @@ def run_subprocess(
             timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
-        stdout, stdout_truncated = truncate_text(exc.stdout or "", max_chars)
-        stderr, stderr_truncated = truncate_text(exc.stderr or "", max_chars)
+        stdout, stdout_truncated = truncate_text(_subprocess_text(exc.stdout), max_chars)
+        stderr, stderr_truncated = truncate_text(_subprocess_text(exc.stderr), max_chars)
         return {
             "ok": False,
             "error_type": "retryable_error",

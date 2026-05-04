@@ -3,6 +3,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 SECRET_PATTERNS = [
     re.compile(r"(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*['\"]?[^'\"\s]+"),
@@ -49,9 +50,10 @@ class JsonlLogger:
     def __init__(self, log_dir: Path, *, level: str = "INFO") -> None:
         self.log_dir = log_dir
         self.level = level
+        self.session_id = uuid4().hex
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d")
-        self.path = self.log_dir / f"agent-{stamp}.jsonl"
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        self.path = self.log_dir / f"agent-{stamp}-{self.session_id[:8]}.jsonl"
 
     def event(
         self,
@@ -66,6 +68,7 @@ class JsonlLogger:
         record = {
             "timestamp": datetime.now().astimezone().isoformat(),
             "level": self.level,
+            "session_id": self.session_id,
             "event": event,
             "run_id": run_id,
             "thread_id": thread_id,

@@ -31,8 +31,8 @@ REACT_SYSTEM_PROMPT = ChatPromptTemplate.from_messages(
 3. 修改文件前，先读取相关文件或确认目标路径。
 4. 对高风险操作会进入人工审批。
 5. 如需调用工具，使用模型原生 tool calls。
-6. 如不需要工具并准备结束，最终回答必须只输出一个 JSON 对象，符合 FinalAnswer schema。
-7. 不要输出 Markdown 包裹 JSON，不要输出额外解释文本。
+6. 如不需要工具并准备结束，直接输出面向用户的最终回答文本。
+7. 不要输出 Markdown 代码块包裹最终回答，不要输出 JSON 结构。
 8. 不要泄露密钥、token、私钥或 `.env` 内容。
 9. 不要虚构文件内容、命令结果或工具观察。
 
@@ -74,24 +74,12 @@ COMPACT_CONTEXT_PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-REPAIR_OUTPUT_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "你上一次输出不是合法 FinalAnswer JSON。"
-            "请只输出一个合法 JSON 对象，不得添加 Markdown 代码块，不得改变已有事实。",
-        ),
-        ("user", "上一次输出：\n{last_invalid_output}"),
-    ]
-)
-
-
 TOOL_REPAIR_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
             "上一次工具调用失败。请根据错误重新规划；"
-            "不要自动重复同一个错误调用。最终回答仍必须是 FinalAnswer JSON。",
+            "不要自动重复同一个错误调用。最终回答应直接输出面向用户的文本。",
         ),
         ("user", "工具错误：\n{tool_error}"),
     ]

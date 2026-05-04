@@ -17,7 +17,6 @@ class Settings(BaseSettings):
     model_base_url: str | None = None
 
     token_budget_ratio: float = 0.85
-    max_repair_attempts: int = 2
     max_tool_repair_attempts: int = 1
     max_compact_attempts: int = 2
     max_context_chars_per_tool_result: int = 12000
@@ -35,4 +34,4 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
 
     # 先加载到进程环境，确保 LangChain provider SDK 能读取 API key。
     load_dotenv(env_file, override=False)
-    return Settings(_env_file=env_file)
+    return Settings(_env_file=env_file)  # type: ignore[call-arg]

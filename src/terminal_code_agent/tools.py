@@ -152,7 +152,7 @@ def list_files(
             if len(entries) >= max_entries:
                 truncated = True
                 break
-            entry = {"path": rel, "type": "dir" if item.is_dir() else "file"}
+            entry: dict[str, Any] = {"path": rel, "type": "dir" if item.is_dir() else "file"}
             if item.is_file():
                 entry["size"] = item.stat().st_size
             entries.append(entry)

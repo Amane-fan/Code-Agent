@@ -33,9 +33,7 @@ class AgentState(TypedDict, total=False):
 
     llm_calls: int
     model_response: dict[str, Any]
-    model_route: Literal["tool_calls", "final", "invalid_output"]
-    repair_attempts: int
-    last_invalid_output: str
+    model_route: Literal["tool_calls", "final"]
     force_final: bool
 
     pending_tool_calls: list[dict[str, Any]]
@@ -53,4 +51,4 @@ class AgentState(TypedDict, total=False):
     changed_files: Annotated[list[str], operator.add]
     commands_run: Annotated[list[str], operator.add]
 
-    final_json: dict[str, Any]
+    final_answer: str
