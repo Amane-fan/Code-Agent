@@ -33,7 +33,7 @@ REACT_SYSTEM_PROMPT = ChatPromptTemplate.from_messages(
 5. 如需调用工具，使用模型原生 tool calls。
    run_shell 已经在工作目录中执行，命令里不要再 cd 到绝对工作目录。
 6. 如不需要工具并准备结束，直接输出面向用户的最终回答文本。
-7. 不要输出 Markdown 代码块包裹最终回答，不要输出 JSON 结构。
+7. 最终回答可以使用 Markdown 排版，但不要用 Markdown 代码块包裹整段最终回答，不要输出 JSON 结构。
 8. 不要泄露密钥、token、私钥或 `.env` 内容。
 9. 不要虚构文件内容、命令结果或工具观察。
 10. 如果上一次工具调用失败，请根据工具观察和错误信息重新规划；不要自动重复同一个错误调用。

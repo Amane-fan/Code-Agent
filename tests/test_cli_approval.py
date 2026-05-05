@@ -1,11 +1,22 @@
 import json
+from pathlib import Path
+from types import SimpleNamespace
+
+from rich.markdown import Markdown
+from typer.testing import CliRunner
 
 from terminal_code_agent import cli
 from terminal_code_agent.cli import (
     _format_call_arguments_markdown,
+    app,
     ask_user_for_approval,
+    build_graph_config,
     configure_line_editor,
+    parse_resume_command,
+    print_final,
 )
+
+runner = CliRunner()
 
 
 def test_approval_yes(monkeypatch) -> None:
@@ -114,3 +125,124 @@ def test_configure_line_editor_binds_common_delete_keys(monkeypatch) -> None:
 
     assert '"\\C-h": backward-delete-char' in bindings
     assert '"\\e[3~": delete-char' in bindings
+
+
+def test_print_final_renders_answer_as_markdown(monkeypatch) -> None:
+    printed = []
+
+    class FakeConsole:
+        @staticmethod
+        def print(renderable) -> None:
+            printed.append(renderable)
+
+    monkeypatch.setattr(cli, "console", FakeConsole)
+
+    print_final({"final_answer": "**加粗**\n\n- 列表"})
+
+    assert isinstance(printed[0].renderable, Markdown)
+
+
+def test_parse_resume_command_returns_thread_id() -> None:
+    assert parse_resume_command("/resume abc-123") == "abc-123"
+    assert parse_resume_command("普通消息") is None
+
+
+def test_parse_resume_command_rejects_invalid_shape() -> None:
+    try:
+        parse_resume_command("/resume")
+    except ValueError as exc:
+        assert "用法" in str(exc)
+    else:  # pragma: no cover - defensive branch.
+        raise AssertionError("expected ValueError")
+
+    try:
+        parse_resume_command("/resume a b")
+    except ValueError as exc:
+        assert "用法" in str(exc)
+    else:  # pragma: no cover - defensive branch.
+        raise AssertionError("expected ValueError")
+
+
+def test_build_graph_config_uses_thread_id() -> None:
+    assert build_graph_config("thread-a") == {"configurable": {"thread_id": "thread-a"}}
+
+
+def test_cli_generates_new_thread_id_by_default(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "--workdir",
+            str(tmp_path),
+            "--env-file",
+            str(tmp_path / "missing.env"),
+            "--no-color",
+        ],
+        input="exit\n",
+        env={
+            "CHECKPOINT_DB": str(tmp_path / "checkpoints.sqlite"),
+            "LOG_DIR": str(tmp_path / "logs"),
+        },
+    )
+
+    assert result.exit_code == 0
+    assert "thread  default" not in result.output
+    assert "thread  00000000-0000-0000-0000-000000000000" not in result.output
+    assert (tmp_path / "checkpoints.sqlite").exists()
+
+
+def test_cli_resume_switches_to_existing_thread(tmp_path: Path, monkeypatch) -> None:
+    class FakeGraph:
+        def get_state(self, config):
+            if config["configurable"]["thread_id"] == "existing-thread":
+                return SimpleNamespace(values={"messages": [{"role": "user", "content": "old"}]})
+            return SimpleNamespace(values={})
+
+    monkeypatch.setattr(cli, "build_graph", lambda *args, **kwargs: FakeGraph())
+
+    result = runner.invoke(
+        app,
+        [
+            "--workdir",
+            str(tmp_path),
+            "--env-file",
+            str(tmp_path / "missing.env"),
+            "--no-color",
+        ],
+        input="/resume existing-thread\nexit\n",
+        env={
+            "CHECKPOINT_DB": str(tmp_path / "checkpoints.sqlite"),
+            "LOG_DIR": str(tmp_path / "logs"),
+        },
+    )
+
+    assert result.exit_code == 0
+    assert "已恢复 thread-id:" in result.output
+    assert "existing-thread" in result.output
+
+
+def test_cli_resume_keeps_current_thread_when_missing(tmp_path: Path, monkeypatch) -> None:
+    class FakeGraph:
+        def get_state(self, config):
+            return SimpleNamespace(values={})
+
+    monkeypatch.setattr(cli, "build_graph", lambda *args, **kwargs: FakeGraph())
+
+    result = runner.invoke(
+        app,
+        [
+            "--workdir",
+            str(tmp_path),
+            "--env-file",
+            str(tmp_path / "missing.env"),
+            "--no-color",
+        ],
+        input="/resume missing-thread\nexit\n",
+        env={
+            "CHECKPOINT_DB": str(tmp_path / "checkpoints.sqlite"),
+            "LOG_DIR": str(tmp_path / "logs"),
+        },
+    )
+
+    assert result.exit_code == 0
+    assert "未找到 thread-id:" in result.output
+    assert "missing-thread" in result.output

@@ -33,14 +33,14 @@ uv run python -m terminal_code_agent --workdir .
 常用参数：
 
 - `--workdir`：必填，agent 可访问的工作目录。
-- `--thread-id`：会话 ID，默认 `default`。
+- `--thread-id`：可选会话 ID；未指定时每次启动会自动生成新的 UUID。
 - `--env-file`：配置文件路径，默认 `.env`。
 - `--log-level`：覆盖配置中的日志级别。
 - `--no-color`：禁用 Rich 彩色输出。
 
-CLI 启动时会显示当前 workdir、thread 和日志文件路径；审批请求和最终回答会用结构化终端面板展示。交互输入显式启用 `readline`，用于改善 backspace、Ctrl-H 和 Delete 等按键在不同终端中的兼容性。
+CLI 启动时会显示当前 workdir、thread 和日志文件路径；审批请求和最终回答会用结构化终端面板展示。对话 State 会通过 SQLite checkpoint 自动保存到 `CHECKPOINT_DB`，默认 `.agent/checkpoints.sqlite`。交互输入显式启用 `readline`，用于改善 backspace、Ctrl-H 和 Delete 等按键在不同终端中的兼容性。
 
-退出会话时输入 `exit` 或 `quit`。
+输入 `/resume <thread-id>` 可以恢复已有会话上下文；恢复成功后，后续输入会继续写入该 thread。退出会话时输入 `exit` 或 `quit`。
 
 ## 示例
 
@@ -106,7 +106,7 @@ uv run ruff check .
 
 **最终回答为什么是纯文本？**
 
-当前最终输出契约只保留面向用户的回答文本，CLI 会直接打印 `final_answer`。
+当前最终输出契约只保留面向用户的回答文本，CLI 会将 `final_answer` 按 Markdown 渲染后打印。
 
 **为什么写文件和运行命令都要审批？**
 

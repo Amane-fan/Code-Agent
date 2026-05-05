@@ -1,21 +1,22 @@
-import argparse
 import json
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from langgraph.checkpoint.memory import InMemorySaver
+import typer
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 from terminal_code_agent.config import load_settings
 from terminal_code_agent.graph import build_graph, configure_event_console
 from terminal_code_agent.logging_utils import JsonlLogger
 from terminal_code_agent.schemas import ApprovalResume, PendingToolCall
 
+app = typer.Typer(add_completion=False)
 console = Console()
 readline: Any | None
 CODE_FIELD_PLACEHOLDER = "<见下方代码块>"
@@ -72,18 +73,30 @@ def read_cli_input(prompt: str) -> str:
 def resolve_workdir(path: str) -> Path:
     workdir = Path(path).expanduser().resolve()
     if not workdir.exists() or not workdir.is_dir():
-        raise SystemExit(f"工作目录不存在或不是目录: {path}")
+        raise typer.BadParameter(f"工作目录不存在或不是目录: {path}")
     return workdir
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="terminal-code-agent")
-    parser.add_argument("--workdir", required=True, help="agent 工作目录")
-    parser.add_argument("--thread-id", default="default", help="会话 ID，用于 checkpointer")
-    parser.add_argument("--env-file", default=".env", help="配置文件路径")
-    parser.add_argument("--log-level", default=None, help="覆盖配置中的日志级别")
-    parser.add_argument("--no-color", action="store_true", help="禁用彩色终端输出")
-    return parser.parse_args()
+def generate_thread_id() -> str:
+    return str(uuid.uuid4())
+
+
+def build_graph_config(thread_id: str) -> dict[str, Any]:
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def parse_resume_command(user_input: str) -> str | None:
+    parts = user_input.split()
+    if not parts or parts[0] != "/resume":
+        return None
+    if len(parts) != 2:
+        raise ValueError("用法: /resume <thread-id>")
+    return parts[1]
+
+
+def has_checkpoint(graph: Any, thread_id: str) -> bool:
+    snapshot = graph.get_state(build_graph_config(thread_id))
+    return bool(getattr(snapshot, "values", None))
 
 
 def _language_for_path(path: Any) -> str:
@@ -190,38 +203,69 @@ def run_graph_with_approval_loop(
 
 def print_final(result: dict[str, Any]) -> None:
     answer = str(result.get("final_answer", ""))
-    console.print(Panel(Text(answer), title="answer", border_style="green"))
+    console.print(Panel(Markdown(answer), title="answer", border_style="green"))
+
+
+@app.command()
+def run(
+    workdir: Annotated[str, typer.Option("--workdir", help="agent 工作目录")],
+    thread_id: Annotated[
+        str | None,
+        typer.Option("--thread-id", help="会话 ID；未指定时自动生成新的 thread-id"),
+    ] = None,
+    env_file: Annotated[str, typer.Option("--env-file", help="配置文件路径")] = ".env",
+    log_level: Annotated[
+        str | None, typer.Option("--log-level", help="覆盖配置中的日志级别")
+    ] = None,
+    no_color: Annotated[bool, typer.Option("--no-color", help="禁用彩色终端输出")] = False,
+) -> None:
+    configure_line_editor()
+    global console
+    console = Console(no_color=no_color)
+    configure_event_console(no_color=no_color)
+    settings = load_settings(env_file)
+    if log_level:
+        settings.log_level = log_level
+    resolved_workdir = resolve_workdir(workdir)
+    logger = JsonlLogger(settings.log_dir, level=settings.log_level)
+    current_thread_id = thread_id or generate_thread_id()
+    settings.checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
+
+    with SqliteSaver.from_conn_string(str(settings.checkpoint_db)) as checkpointer:
+        graph = build_graph(checkpointer, settings=settings, logger=logger)
+        print_header(resolved_workdir, current_thread_id, logger.path)
+
+        while True:
+            try:
+                user_input = read_cli_input("user > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print()
+                break
+            if not user_input:
+                continue
+            if user_input.lower() in {"exit", "quit"}:
+                break
+            try:
+                resume_thread_id = parse_resume_command(user_input)
+            except ValueError as exc:
+                console.print(f"[yellow]{exc}[/yellow]")
+                continue
+            if resume_thread_id is not None:
+                if not has_checkpoint(graph, resume_thread_id):
+                    console.print(f"[red]未找到 thread-id:[/red] {resume_thread_id}")
+                    continue
+                current_thread_id = resume_thread_id
+                console.print(f"[cyan]已恢复 thread-id:[/cyan] {current_thread_id}")
+                continue
+            config = build_graph_config(current_thread_id)
+            state_input = {
+                "thread_id": current_thread_id,
+                "workdir": str(resolved_workdir),
+                "user_input": user_input,
+            }
+            result = run_graph_with_approval_loop(graph, state_input, config)
+            print_final(result)
 
 
 def main() -> None:
-    configure_line_editor()
-    args = parse_args()
-    global console
-    console = Console(no_color=args.no_color)
-    configure_event_console(no_color=args.no_color)
-    settings = load_settings(args.env_file)
-    if args.log_level:
-        settings.log_level = args.log_level
-    workdir = resolve_workdir(args.workdir)
-    logger = JsonlLogger(settings.log_dir, level=settings.log_level)
-    graph = build_graph(InMemorySaver(), settings=settings, logger=logger)
-    config = {"configurable": {"thread_id": args.thread_id}}
-    print_header(workdir, args.thread_id, logger.path)
-
-    while True:
-        try:
-            user_input = read_cli_input("user > ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print()
-            break
-        if not user_input:
-            continue
-        if user_input.lower() in {"exit", "quit"}:
-            break
-        state_input = {
-            "thread_id": args.thread_id,
-            "workdir": str(workdir),
-            "user_input": user_input,
-        }
-        result = run_graph_with_approval_loop(graph, state_input, config)
-        print_final(result)
+    app()

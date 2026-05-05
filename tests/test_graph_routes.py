@@ -2,6 +2,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from terminal_code_agent.config import Settings
@@ -46,6 +47,19 @@ class FakePlainTextModel:
     def invoke(self, messages):
         self.calls.append([str(getattr(message, "content", "")) for message in messages])
         return AIMessage(content="不是 JSON")
+
+
+class FakePersistentModel:
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.calls: list[list[str]] = []
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        self.calls.append([str(getattr(message, "content", "")) for message in messages])
+        return AIMessage(content=f"{self.label} answer")
 
 
 class FakeRetryableToolErrorModel:
@@ -141,6 +155,35 @@ def test_plain_text_final_answer_does_not_need_json_repair(tmp_path: Path) -> No
 
     assert result["final_answer"] == "不是 JSON"
     assert len(model.calls) == 1
+
+
+def test_sqlite_checkpointer_restores_history_across_graph_instances(tmp_path: Path) -> None:
+    db_path = tmp_path / "checkpoints.sqlite"
+    settings = Settings(skills_dir=tmp_path / "skills")
+
+    with SqliteSaver.from_conn_string(str(db_path)) as checkpointer:
+        first_model = FakePersistentModel("first")
+        graph = build_graph(checkpointer, settings=settings, model=first_model)
+        result = graph.invoke(
+            {"thread_id": "persisted", "workdir": str(tmp_path), "user_input": "第一轮"},
+            config={"configurable": {"thread_id": "persisted"}},
+        )
+
+    assert result["final_answer"] == "first answer"
+
+    with SqliteSaver.from_conn_string(str(db_path)) as checkpointer:
+        second_model = FakePersistentModel("second")
+        graph = build_graph(checkpointer, settings=settings, model=second_model)
+        result = graph.invoke(
+            {"thread_id": "persisted", "workdir": str(tmp_path), "user_input": "第二轮"},
+            config={"configurable": {"thread_id": "persisted"}},
+        )
+
+    assert result["final_answer"] == "second answer"
+    second_prompt = "\n".join(second_model.calls[0])
+    assert "第一轮" in second_prompt
+    assert "first answer" in second_prompt
+    assert "第二轮" in second_prompt
 
 
 def test_retryable_tool_error_is_added_to_next_model_context(tmp_path: Path) -> None:
