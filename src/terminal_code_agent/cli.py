@@ -6,12 +6,13 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
 from terminal_code_agent.config import load_settings
-from terminal_code_agent.graph import build_graph
+from terminal_code_agent.graph import build_graph, configure_event_console
 from terminal_code_agent.logging_utils import JsonlLogger
 from terminal_code_agent.schemas import ApprovalResume, PendingToolCall
 
@@ -58,12 +59,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _summarize_call(call: dict[str, Any]) -> str:
+def _format_call_arguments_markdown(call: dict[str, Any]) -> str:
     args = call.get("args", {})
-    compact = json.dumps(args, ensure_ascii=False)
-    if len(compact) > 500:
-        compact = compact[:500] + "...[TRUNCATED]"
-    return compact
+    formatted = json.dumps(args, ensure_ascii=False, indent=2, default=str)
+    return f"```json\n{formatted}\n```"
 
 
 def print_header(workdir: Path, thread_id: str, log_path: Path) -> None:
@@ -81,7 +80,7 @@ def print_approval_request(payload: dict[str, Any]) -> None:
     table.add_column("tool", no_wrap=True)
     table.add_column("arguments")
     for call in payload.get("tool_calls", []):
-        table.add_row(str(call.get("name", "")), _summarize_call(call))
+        table.add_row(str(call.get("name", "")), Markdown(_format_call_arguments_markdown(call)))
     question = payload.get("question", "是否允许执行工具调用？")
     risk = payload.get("risk", "")
     console.print(
@@ -143,6 +142,7 @@ def main() -> None:
     args = parse_args()
     global console
     console = Console(no_color=args.no_color)
+    configure_event_console(no_color=args.no_color)
     settings = load_settings(args.env_file)
     if args.log_level:
         settings.log_level = args.log_level

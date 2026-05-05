@@ -6,7 +6,9 @@ from langgraph.types import Command
 
 from terminal_code_agent.config import Settings
 from terminal_code_agent.graph import (
+    _build_prompt_messages,
     build_graph,
+    context_pack,
     route_budget_check,
     route_human_approval,
     route_model_result,
@@ -241,3 +243,65 @@ def test_tool_gate_denied_adds_tool_message_for_pending_call(tmp_path: Path) -> 
     assert result["messages"][0]["role"] == "tool"
     assert result["messages"][0]["tool_call_id"] == "call_1"
     assert "工具调用被拒绝" in result["messages"][0]["content"]
+
+
+def test_model_prompt_skips_leading_tool_message_after_history_trim(tmp_path: Path) -> None:
+    messages = [{"role": "user", "content": "dropped by history trim"}]
+    messages.append(
+        {
+            "role": "tool",
+            "content": "orphaned tool response",
+            "tool_call_id": "call_1",
+            "name": "run_shell",
+        }
+    )
+    messages.extend(
+        {"role": "assistant", "content": f"kept assistant message {index}"}
+        for index in range(29)
+    )
+
+    prompt_messages = _build_prompt_messages(
+        {
+            "workdir": str(tmp_path),
+            "messages": messages,
+            "selected_skills": [],
+            "skill_context": "",
+            "context_summary": "",
+            "observations": [],
+            "tool_error": {},
+        }
+    )
+
+    assert not isinstance(prompt_messages[1], ToolMessage)
+    assert str(prompt_messages[1].content) == "kept assistant message 0"
+
+
+def test_context_pack_skips_leading_tool_message_after_history_trim(tmp_path: Path) -> None:
+    messages = [{"role": "user", "content": "dropped by history trim"}]
+    messages.append(
+        {
+            "role": "tool",
+            "content": "orphaned tool response",
+            "tool_call_id": "call_1",
+            "name": "run_shell",
+        }
+    )
+    messages.extend(
+        {"role": "assistant", "content": f"kept assistant message {index}"}
+        for index in range(29)
+    )
+
+    result = context_pack(
+        {
+            "messages": messages,
+            "context_summary": "",
+            "selected_skills": [],
+            "skill_context": "",
+            "observations": [],
+            "tool_error": {},
+        },
+        settings=Settings(skills_dir=tmp_path / "skills"),
+    )
+
+    assert result["context_messages"][0]["role"] == "assistant"
+    assert result["context_messages"][0]["content"] == "kept assistant message 0"

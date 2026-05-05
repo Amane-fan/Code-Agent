@@ -6,6 +6,8 @@ from typing import Any, cast
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from rich.console import Console
+from rich.text import Text
 
 from terminal_code_agent.config import Settings
 from terminal_code_agent.llm import build_chat_model
@@ -31,6 +33,8 @@ from terminal_code_agent.token_budget import (
 from terminal_code_agent.tool_gate import evaluate_tool_calls
 from terminal_code_agent.tool_runtime import parse_tool_result, truncate_text
 from terminal_code_agent.tools import TOOL_BY_NAME, TOOLS, invoke_tool, summarize_tool_result
+
+event_console = Console()
 
 
 def _message_from_record(record: ChatRecord) -> BaseMessage:
@@ -67,6 +71,13 @@ def _tool_denial_messages(calls: list[dict[str, Any]], reason: str) -> list[Chat
     return messages
 
 
+def _trim_leading_tool_messages(records: list[ChatRecord]) -> list[ChatRecord]:
+    first_non_tool = 0
+    while first_non_tool < len(records) and records[first_non_tool].get("role") == "tool":
+        first_non_tool += 1
+    return records[first_non_tool:]
+
+
 def _state_settings(state: AgentState, settings: Settings) -> Settings:
     return settings
 
@@ -90,7 +101,12 @@ def _log(
 
 
 def _print_event(text: str) -> None:
-    print(text)
+    event_console.print(Text(text, style="dim"))
+
+
+def configure_event_console(*, no_color: bool = False) -> None:
+    global event_console
+    event_console = Console(no_color=no_color)
 
 
 def init_state(state: AgentState, *, logger: JsonlLogger | None = None) -> dict[str, Any]:
@@ -216,7 +232,7 @@ def skill_select(
 
 
 def context_pack(state: AgentState, *, settings: Settings) -> dict[str, Any]:
-    recent_messages = state.get("messages", [])[-30:]
+    recent_messages = _trim_leading_tool_messages(state.get("messages", [])[-30:])
     observations = state.get("observations", [])[-10:]
     packed = pack_for_estimation(
         {
@@ -276,6 +292,7 @@ def _build_prompt_messages(state: AgentState) -> list[BaseMessage]:
         list[ChatRecord],
         context_messages if len(context_messages) == len(messages) else messages[-30:],
     )
+    records = _trim_leading_tool_messages(records)
     history = [_message_from_record(record) for record in records]
     return REACT_SYSTEM_PROMPT.format_messages(
         workdir=state.get("workdir", ""),
