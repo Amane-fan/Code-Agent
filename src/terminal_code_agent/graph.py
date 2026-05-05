@@ -285,7 +285,19 @@ def compact_context(state: AgentState, *, settings: Settings, model: Any = None)
     return {"context_summary": str(response.content), "compact_attempts": attempts + 1}
 
 
-def _build_prompt_messages(state: AgentState) -> list[BaseMessage]:
+def _format_model_info(settings: Settings) -> str:
+    return "\n".join(
+        [
+            f"- model_name: {settings.model_name}",
+            f"- model_temperature: {settings.model_temperature}",
+            f"- model_max_tokens: {settings.model_max_tokens}",
+            f"- model_context_window: {settings.model_context_window}",
+            f"- model_timeout_seconds: {settings.model_timeout_seconds}",
+        ]
+    )
+
+
+def _build_prompt_messages(state: AgentState, settings: Settings) -> list[BaseMessage]:
     messages = state.get("messages", [])
     context_messages = state.get("context_messages") or []
     records = cast(
@@ -296,6 +308,7 @@ def _build_prompt_messages(state: AgentState) -> list[BaseMessage]:
     history = [_message_from_record(record) for record in records]
     return REACT_SYSTEM_PROMPT.format_messages(
         workdir=state.get("workdir", ""),
+        model_info=_format_model_info(settings),
         selected_skills=", ".join(state.get("selected_skills", [])),
         skill_context=state.get("skill_context", ""),
         context_summary=state.get("context_summary", ""),
@@ -314,7 +327,7 @@ def call_model(
     if model is None:
         model = build_chat_model(settings)
     bound_model = model.bind_tools(TOOLS) if hasattr(model, "bind_tools") else model
-    response = bound_model.invoke(_build_prompt_messages(state))
+    response = bound_model.invoke(_build_prompt_messages(state, settings))
     tool_calls = getattr(response, "tool_calls", None) or []
     content = str(getattr(response, "content", ""))
     update: dict[str, Any] = {

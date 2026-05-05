@@ -8,6 +8,7 @@ from langgraph.types import Command
 from terminal_code_agent.config import Settings
 from terminal_code_agent.graph import (
     _build_prompt_messages,
+    _format_model_info,
     build_graph,
     context_pack,
     route_budget_check,
@@ -312,11 +313,40 @@ def test_model_prompt_skips_leading_tool_message_after_history_trim(tmp_path: Pa
             "context_summary": "",
             "observations": [],
             "tool_error": {},
-        }
+        },
+        Settings(skills_dir=tmp_path / "skills"),
     )
 
     assert not isinstance(prompt_messages[1], ToolMessage)
     assert str(prompt_messages[1].content) == "kept assistant message 0"
+
+
+def test_model_prompt_includes_model_info(tmp_path: Path) -> None:
+    settings = Settings(
+        skills_dir=tmp_path / "skills",
+        model_name="openai:gpt-test",
+        model_temperature=0.2,
+        model_max_tokens=1234,
+        model_context_window=9999,
+        model_timeout_seconds=45,
+    )
+
+    prompt_messages = _build_prompt_messages(
+        {
+            "workdir": str(tmp_path),
+            "messages": [],
+            "selected_skills": [],
+            "skill_context": "",
+            "context_summary": "",
+            "observations": [],
+            "tool_error": {},
+        },
+        settings,
+    )
+
+    system_prompt = str(prompt_messages[0].content)
+    assert "当前模型信息：" in system_prompt
+    assert _format_model_info(settings) in system_prompt
 
 
 def test_context_pack_skips_leading_tool_message_after_history_trim(tmp_path: Path) -> None:

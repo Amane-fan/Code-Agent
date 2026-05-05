@@ -25,6 +25,9 @@ REACT_SYSTEM_PROMPT = ChatPromptTemplate.from_messages(
 
 工作目录：{workdir}
 
+当前模型信息：
+{model_info}
+
 必须遵守：
 1. 优先理解任务和已有代码，再修改文件。
 2. 文件访问只能使用提供的工具。
