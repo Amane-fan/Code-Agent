@@ -18,6 +18,33 @@ from terminal_code_agent.schemas import ApprovalResume, PendingToolCall
 
 console = Console()
 readline: Any | None
+CODE_FIELD_PLACEHOLDER = "<见下方代码块>"
+LANGUAGE_BY_SUFFIX = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "jsx",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".json": "json",
+    ".md": "markdown",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".html": "html",
+    ".css": "css",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".sql": "sql",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".c": "c",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".java": "java",
+    ".rs": "rust",
+    ".go": "go",
+}
 
 try:
     import readline as _readline
@@ -59,10 +86,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _language_for_path(path: Any) -> str:
+    if not isinstance(path, str):
+        return ""
+    return LANGUAGE_BY_SUFFIX.get(Path(path).suffix.lower(), "")
+
+
+def _fenced_code_block(content: str, language: str = "") -> str:
+    fence = "```"
+    while fence in content:
+        fence += "`"
+    body = content if content.endswith("\n") else f"{content}\n"
+    return f"{fence}{language}\n{body}{fence}"
+
+
 def _format_call_arguments_markdown(call: dict[str, Any]) -> str:
-    args = call.get("args", {})
+    raw_args = call.get("args", {})
+    args = dict(raw_args) if isinstance(raw_args, dict) else {"value": raw_args}
+    code_blocks: list[str] = []
+    tool_name = str(call.get("name", ""))
+
+    if tool_name == "write_file" and isinstance(args.get("content"), str):
+        content = str(args["content"])
+        args["content"] = CODE_FIELD_PLACEHOLDER
+        language = _language_for_path(args.get("path"))
+        code_blocks.append(_fenced_code_block(content, language))
+    elif tool_name == "apply_patch" and isinstance(args.get("patch"), str):
+        patch = str(args["patch"])
+        args["patch"] = CODE_FIELD_PLACEHOLDER
+        code_blocks.append(_fenced_code_block(patch, "diff"))
+
     formatted = json.dumps(args, ensure_ascii=False, indent=2, default=str)
-    return f"```json\n{formatted}\n```"
+    sections = [f"```json\n{formatted}\n```", *code_blocks]
+    return "\n\n".join(sections)
 
 
 def print_header(workdir: Path, thread_id: str, log_path: Path) -> None:

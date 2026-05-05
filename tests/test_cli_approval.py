@@ -42,16 +42,62 @@ def test_approval_edit(monkeypatch) -> None:
 
 
 def test_format_call_arguments_markdown_preserves_full_pretty_json() -> None:
-    long_content = "x" * 600
+    long_pattern = "x" * 600
     rendered = _format_call_arguments_markdown(
-        {"name": "write_file", "args": {"path": "a.txt", "content": long_content}}
+        {"name": "grep", "args": {"path": ".", "pattern": long_pattern}}
     )
 
     assert rendered.startswith("```json\n")
     assert rendered.endswith("\n```")
-    assert '"path": "a.txt"' in rendered
-    assert f'"content": "{long_content}"' in rendered
+    assert '"path": "."' in rendered
+    assert f'"pattern": "{long_pattern}"' in rendered
     assert "...[TRUNCATED]" not in rendered
+
+
+def test_format_call_arguments_markdown_expands_write_file_content() -> None:
+    content = "def greet():\n    print('hello')\n"
+
+    rendered = _format_call_arguments_markdown(
+        {"name": "write_file", "args": {"path": "hello.py", "content": content}}
+    )
+
+    assert '"path": "hello.py"' in rendered
+    assert '"content": "<见下方代码块>"' in rendered
+    assert '"content": "def greet():\\n    print(' not in rendered
+    assert "```python\ndef greet():\n    print('hello')\n```" in rendered
+
+
+def test_format_call_arguments_markdown_expands_apply_patch_patch() -> None:
+    patch = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Update File: app.py",
+            "@@",
+            "-print('old')",
+            "+print('new')",
+            "*** End Patch",
+        ]
+    )
+
+    rendered = _format_call_arguments_markdown(
+        {"name": "apply_patch", "args": {"patch": patch}}
+    )
+
+    assert '"patch": "<见下方代码块>"' in rendered
+    assert '"patch": "*** Begin Patch\\n' not in rendered
+    assert f"```diff\n{patch}\n```" in rendered
+
+
+def test_format_call_arguments_markdown_keeps_run_shell_command_in_json() -> None:
+    command = "python - <<'PY'\nprint('hello')\nPY"
+
+    rendered = _format_call_arguments_markdown(
+        {"name": "run_shell", "args": {"command": command, "timeout_seconds": 30}}
+    )
+
+    assert '"command": "python - <<' in rendered
+    assert "\\nprint('hello')\\nPY" in rendered
+    assert "```shell\n" not in rendered
 
 
 def test_configure_line_editor_binds_common_delete_keys(monkeypatch) -> None:
