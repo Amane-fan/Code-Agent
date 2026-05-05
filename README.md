@@ -47,13 +47,25 @@ uv sync
 cp .env.example .env
 ```
 
-`MODEL_NAME` 使用 LangChain `init_chat_model` 支持的 `provider:model` 格式，例如：
+`MODEL_NAME` 填裸模型名，例如：
 
 ```env
-MODEL_NAME=openai:gpt-4.1-mini
+MODEL_NAME=gpt-4.1-mini
 ```
 
-API key 可以通过 `.env` 或环境变量提供。项目不会硬编码密钥，也不会在日志中记录密钥内容。
+OpenAI 或兼容 OpenAI API 的服务使用 `OPENAI_API_KEY`。兼容服务可同时配置
+`MODEL_BASE_URL`，例如 DeepSeek：
+
+```env
+MODEL_NAME=deepseek-chat
+MODEL_BASE_URL=https://api.deepseek.com/v1
+OPENAI_API_KEY=你的_key
+```
+
+DeepSeek thinking 模式下，工具调用子轮会按官方建议回传 `reasoning_content`；
+新用户轮次开始时会从历史上下文中清理旧的 `reasoning_content`。
+
+项目不会硬编码密钥，也不会在日志中记录密钥内容。
 
 ### 3. 启动 CLI
 

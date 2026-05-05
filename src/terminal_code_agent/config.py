@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    model_name: str = "openai:gpt-4.1-mini"
+    model_name: str = "gpt-4.1-mini"
     model_temperature: float = 0
     model_max_tokens: int = 4096
     model_timeout_seconds: int = 120

@@ -41,10 +41,16 @@ def _message_from_record(record: ChatRecord) -> BaseMessage:
     role = record.get("role", "user")
     content = record.get("content", "")
     if role == "assistant":
-        tool_calls = (record.get("metadata") or {}).get("tool_calls")
+        metadata = record.get("metadata") or {}
+        additional_kwargs: dict[str, Any] = {}
+        if "reasoning_content" in metadata:
+            additional_kwargs["reasoning_content"] = metadata["reasoning_content"]
+        tool_calls = metadata.get("tool_calls")
         if tool_calls:
-            return AIMessage(content=content, tool_calls=tool_calls)
-        return AIMessage(content=content)
+            return AIMessage(
+                content=content, additional_kwargs=additional_kwargs, tool_calls=tool_calls
+            )
+        return AIMessage(content=content, additional_kwargs=additional_kwargs)
     if role == "tool":
         return ToolMessage(content=content, tool_call_id=record.get("tool_call_id") or "tool_call")
     if role in {"system", "developer"}:
@@ -54,7 +60,37 @@ def _message_from_record(record: ChatRecord) -> BaseMessage:
 
 def _message_to_record(message: Any) -> ChatRecord:
     content = str(getattr(message, "content", ""))
-    return {"role": "assistant", "content": content}
+    record: ChatRecord = {"role": "assistant", "content": content}
+    reasoning_content = (getattr(message, "additional_kwargs", {}) or {}).get("reasoning_content")
+    if reasoning_content is not None:
+        record["metadata"] = {"reasoning_content": str(reasoning_content)}
+    return record
+
+
+def _strip_reasoning_content(record: ChatRecord) -> ChatRecord:
+    metadata = dict(record.get("metadata") or {})
+    if "reasoning_content" not in metadata:
+        return record
+    metadata.pop("reasoning_content", None)
+    sanitized = dict(record)
+    if metadata:
+        sanitized["metadata"] = metadata
+    else:
+        sanitized.pop("metadata", None)
+    return cast(ChatRecord, sanitized)
+
+
+def _clear_stale_reasoning_content(records: list[ChatRecord]) -> list[ChatRecord]:
+    last_user_index = -1
+    for index, record in enumerate(records):
+        if record.get("role") == "user":
+            last_user_index = index
+    if last_user_index == -1:
+        return [_strip_reasoning_content(record) for record in records]
+    return [
+        record if index >= last_user_index else _strip_reasoning_content(record)
+        for index, record in enumerate(records)
+    ]
 
 
 def _tool_denial_messages(calls: list[dict[str, Any]], reason: str) -> list[ChatRecord]:
@@ -233,6 +269,7 @@ def skill_select(
 
 def context_pack(state: AgentState, *, settings: Settings) -> dict[str, Any]:
     recent_messages = _trim_leading_tool_messages(state.get("messages", [])[-30:])
+    recent_messages = _clear_stale_reasoning_content(recent_messages)
     observations = state.get("observations", [])[-10:]
     packed = pack_for_estimation(
         {
@@ -305,6 +342,7 @@ def _build_prompt_messages(state: AgentState, settings: Settings) -> list[BaseMe
         context_messages if len(context_messages) == len(messages) else messages[-30:],
     )
     records = _trim_leading_tool_messages(records)
+    records = _clear_stale_reasoning_content(records)
     history = [_message_from_record(record) for record in records]
     return REACT_SYSTEM_PROMPT.format_messages(
         workdir=state.get("workdir", ""),
@@ -330,6 +368,7 @@ def call_model(
     response = bound_model.invoke(_build_prompt_messages(state, settings))
     tool_calls = getattr(response, "tool_calls", None) or []
     content = str(getattr(response, "content", ""))
+    reasoning_content = (getattr(response, "additional_kwargs", {}) or {}).get("reasoning_content")
     update: dict[str, Any] = {
         "llm_calls": state.get("llm_calls", 0) + 1,
         "model_response": {"content": content},
@@ -347,6 +386,14 @@ def call_model(
             )
         names = ", ".join(call["name"] for call in pending)
         _print_event(f"[model] tool_calls={names}")
+        metadata: dict[str, Any] = {
+            "tool_calls": [
+                {"id": call["id"], "name": call["name"], "args": call["args"]}
+                for call in pending
+            ]
+        }
+        if reasoning_content is not None:
+            metadata["reasoning_content"] = str(reasoning_content)
         update.update(
             {
                 "pending_tool_calls": pending,
@@ -355,12 +402,7 @@ def call_model(
                     {
                         "role": "assistant",
                         "content": content,
-                        "metadata": {
-                            "tool_calls": [
-                                {"id": call["id"], "name": call["name"], "args": call["args"]}
-                                for call in pending
-                            ]
-                        },
+                        "metadata": metadata,
                     }
                 ],
             }

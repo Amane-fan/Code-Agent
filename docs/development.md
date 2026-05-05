@@ -246,18 +246,15 @@ uv run --locked pytest
 ### 5.1 `.env.example`
 
 ```dotenv
-# 模型配置。推荐使用 LangChain init_chat_model 支持的 provider:model 格式。
-MODEL_NAME=openai:gpt-4.1-mini
+# 模型配置。使用 ChatOpenAI，MODEL_NAME 填裸模型名。
+MODEL_NAME=gpt-4.1-mini
 MODEL_TEMPERATURE=0
 MODEL_MAX_TOKENS=4096
 MODEL_TIMEOUT_SECONDS=120
 MODEL_CONTEXT_WINDOW=128000
 
-# Provider API Key。
+# OpenAI 或兼容 OpenAI API 服务的 Key。
 OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-GOOGLE_API_KEY=
-OPENROUTER_API_KEY=
 
 # 兼容 OpenAI API 的服务可使用 base_url。
 MODEL_BASE_URL=
@@ -291,7 +288,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    model_name: str = "openai:gpt-4.1-mini"
+    model_name: str = "gpt-4.1-mini"
     model_temperature: float = 0
     model_max_tokens: int = 4096
     model_timeout_seconds: int = 120
@@ -314,7 +311,7 @@ class Settings(BaseSettings):
 
 1. 不要在代码中硬编码 API key。
 2. 不要在日志中输出 `.env` 完整内容。
-3. `MODEL_NAME` 应允许不同 provider，避免把实现绑定到单一供应商。
+3. 兼容 OpenAI API 的服务通过 `MODEL_BASE_URL` 接入，`MODEL_NAME` 填服务端模型名。
 4. CLI 启动时可以支持 `--env-file`，但第一阶段不是必须。
 
 ---
@@ -667,21 +664,30 @@ class ApprovalResume(BaseModel):
 ### 10.1 `llm.py`
 
 ```python
-from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenAI
 
 from terminal_code_agent.config import Settings
+
+
+def _normalize_openai_model_name(model_name: str) -> str:
+    if model_name.startswith("openai:"):
+        return model_name.split(":", 1)[1]
+    if ":" in model_name:
+        raise ValueError("MODEL_NAME 使用 ChatOpenAI 初始化，请配置为裸模型名。")
+    return model_name
 
 
 def build_chat_model(settings: Settings):
     """根据 .env 配置初始化 ChatModel。"""
     kwargs = {
+        "model": _normalize_openai_model_name(settings.model_name),
         "temperature": settings.model_temperature,
         "timeout": settings.model_timeout_seconds,
         "max_tokens": settings.model_max_tokens,
     }
     if settings.model_base_url:
         kwargs["base_url"] = settings.model_base_url
-    return init_chat_model(settings.model_name, **kwargs)
+    return ChatOpenAI(**kwargs)
 ```
 
 约束：
@@ -691,6 +697,8 @@ def build_chat_model(settings: Settings):
 3. 不要在日志中记录 API key。
 4. 工具调用使用 `model.bind_tools(TOOLS)` 或等价 LangChain 原生能力。
 5. 可以在启动时构造一次 model，通过 graph runtime 或闭包传入节点，避免每次节点重新初始化。
+6. DeepSeek thinking 模式的工具调用子轮必须回传 `reasoning_content`。
+7. 新用户轮次开始时，应从历史上下文中清理旧的 `reasoning_content`。
 
 ---
 
@@ -1998,7 +2006,7 @@ uv run terminal-code-agent --workdir .
 开发实现时优先查阅官方文档：
 
 1. LangChain Python Tools：`@tool`、工具 schema、ToolRuntime、ToolMessage、Command。
-2. LangChain Python Models：`init_chat_model`、tool calling、`bind_tools`。
+2. LangChain Python Models：`ChatOpenAI`、tool calling、`bind_tools`。
 3. LangGraph Graph API：`StateGraph`、state、reducers、节点、边和条件路由。
 4. LangGraph Interrupts：`interrupt()`、checkpointer、`Command(resume=...)`、同一 `thread_id` 恢复。
 5. uv Projects：`uv init`、`pyproject.toml`、`.venv`、`uv.lock`、`uv run`、`uv sync`。

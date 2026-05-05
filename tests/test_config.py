@@ -7,7 +7,7 @@ def test_load_settings_exports_provider_api_key(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "MODEL_NAME=openai:deepseek-chat\n"
+        "MODEL_NAME=deepseek-chat\n"
         "MODEL_BASE_URL=https://api.deepseek.com/v1\n"
         "OPENAI_API_KEY=test-key\n",
         encoding="utf-8",
@@ -15,7 +15,7 @@ def test_load_settings_exports_provider_api_key(tmp_path, monkeypatch) -> None:
 
     settings = load_settings(env_file)
 
-    assert settings.model_name == "openai:deepseek-chat"
+    assert settings.model_name == "deepseek-chat"
     assert settings.model_base_url == "https://api.deepseek.com/v1"
     assert os.environ["OPENAI_API_KEY"] == "test-key"
 

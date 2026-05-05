@@ -321,10 +321,89 @@ def test_model_prompt_skips_leading_tool_message_after_history_trim(tmp_path: Pa
     assert str(prompt_messages[1].content) == "kept assistant message 0"
 
 
+def test_model_prompt_preserves_reasoning_content_within_active_tool_turn(
+    tmp_path: Path,
+) -> None:
+    prompt_messages = _build_prompt_messages(
+        {
+            "workdir": str(tmp_path),
+            "messages": [
+                {"role": "user", "content": "写文件"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "metadata": {
+                        "reasoning_content": "需要调用写文件工具。",
+                        "tool_calls": [
+                            {"id": "call_1", "name": "write_file", "args": {"path": "a.txt"}}
+                        ],
+                    },
+                },
+                {
+                    "role": "tool",
+                    "content": '{"ok": true}',
+                    "tool_call_id": "call_1",
+                    "name": "write_file",
+                },
+            ],
+            "selected_skills": [],
+            "skill_context": "",
+            "context_summary": "",
+            "observations": [],
+            "tool_error": {},
+        },
+        Settings(skills_dir=tmp_path / "skills"),
+    )
+
+    assistant_message = next(
+        message for message in prompt_messages if isinstance(message, AIMessage)
+    )
+    assert assistant_message.additional_kwargs["reasoning_content"] == "需要调用写文件工具。"
+
+
+def test_model_prompt_clears_stale_reasoning_content_after_new_user_turn(
+    tmp_path: Path,
+) -> None:
+    prompt_messages = _build_prompt_messages(
+        {
+            "workdir": str(tmp_path),
+            "messages": [
+                {"role": "user", "content": "第一轮"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "metadata": {
+                        "reasoning_content": "第一轮内部思考。",
+                        "tool_calls": [{"id": "call_1", "name": "list_files", "args": {}}],
+                    },
+                },
+                {
+                    "role": "tool",
+                    "content": '{"ok": true}',
+                    "tool_call_id": "call_1",
+                    "name": "list_files",
+                },
+                {"role": "user", "content": "第二轮"},
+            ],
+            "selected_skills": [],
+            "skill_context": "",
+            "context_summary": "",
+            "observations": [],
+            "tool_error": {},
+        },
+        Settings(skills_dir=tmp_path / "skills"),
+    )
+
+    assistant_message = next(
+        message for message in prompt_messages if isinstance(message, AIMessage)
+    )
+    assert "reasoning_content" not in assistant_message.additional_kwargs
+
+
 def test_model_prompt_includes_model_info(tmp_path: Path) -> None:
     settings = Settings(
         skills_dir=tmp_path / "skills",
-        model_name="openai:gpt-test",
+        model_name="gpt-test",
         model_temperature=0.2,
         model_max_tokens=1234,
         model_context_window=9999,
@@ -378,3 +457,32 @@ def test_context_pack_skips_leading_tool_message_after_history_trim(tmp_path: Pa
 
     assert result["context_messages"][0]["role"] == "assistant"
     assert result["context_messages"][0]["content"] == "kept assistant message 0"
+
+
+def test_context_pack_clears_stale_reasoning_content_after_new_user_turn(
+    tmp_path: Path,
+) -> None:
+    result = context_pack(
+        {
+            "messages": [
+                {"role": "user", "content": "第一轮"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "metadata": {
+                        "reasoning_content": "第一轮内部思考。",
+                        "tool_calls": [{"id": "call_1", "name": "list_files", "args": {}}],
+                    },
+                },
+                {"role": "user", "content": "第二轮"},
+            ],
+            "context_summary": "",
+            "selected_skills": [],
+            "skill_context": "",
+            "observations": [],
+            "tool_error": {},
+        },
+        settings=Settings(skills_dir=tmp_path / "skills"),
+    )
+
+    assert "reasoning_content" not in result["context_messages"][1].get("metadata", {})
